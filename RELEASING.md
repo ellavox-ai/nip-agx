@@ -5,7 +5,8 @@ with `tsup`. Release them together at the same version.
 
 1. Bump `version` in `packages/core`, `packages/nostr` and `packages/cli` `package.json`, plus
    `AGX_CORE_VERSION` (`packages/core/src/index.ts`), `AGX_NOSTR_VERSION`
-   (`packages/nostr/src/index.ts`) and `.version(…)` in `packages/cli/src/bin/agx.ts`.
+   (`packages/nostr/src/index.ts`) and `AGX_CLI_VERSION` (`packages/cli/src/lib/version.ts`; `version.test.ts` fails if it
+   drifts from `packages/cli/package.json`).
 2. Build, test and check what each tarball ships:
 
    ```sh

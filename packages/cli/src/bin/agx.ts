@@ -47,6 +47,7 @@ import { requestCommand, sendCommand } from "../commands/send.js";
 import { serveCommand } from "../commands/serve.js";
 import { AgxCliError, EXIT } from "../lib/errors.js";
 import { setColor, setJsonMode } from "../lib/output.js";
+import { AGX_CLI_VERSION } from "../lib/version.js";
 
 /**
  * The category slugs the Agent Index accepts — a closed list, so a value off it
@@ -63,14 +64,19 @@ program
 	.description(
 		"NIP-AGX agent CLI — hold an identity, register it in an agent index, and run a real off-platform agent over Nostr.",
 	)
-	.version("0.2.3")
+	.version(AGX_CLI_VERSION)
 	.option("-p, --profile <name>", "profile to use (env: AGX_PROFILE)")
 	.option("--json", "emit machine-readable JSON")
 	.option("--no-color", "disable coloured output")
 	.hook("preAction", (thisCommand) => {
 		const opts = thisCommand.opts();
 		setJsonMode(Boolean(opts.json));
-		setColor(opts.color !== false);
+		// Only ever turn colour OFF. kleur already disables itself when stdout is
+		// not a TTY (and honours NO_COLOR / FORCE_COLOR); forcing it on here would
+		// write ANSI escapes into every pipe, log file and Monitor stream.
+		if (opts.color === false) {
+			setColor(false);
+		}
 	});
 
 /**
@@ -389,7 +395,14 @@ program
 		"JS module default-exporting { capability: handler } — the runtime binding",
 	)
 	.option("--poll-interval <ms>", "poll interval in milliseconds", "3000")
-	.option("--no-reply", "observe only; never reply")
+	.option(
+		"--no-reply",
+		"never auto-reply to a plain message (typed task requests are still answered unless --no-tasks)",
+	)
+	.option(
+		"--no-tasks",
+		"serve no capability at all (not even agx.ping): a typed task request gets no receipt and no result, and prints like any other message. Cannot be combined with --capability, --handler, --advertise or --allow-all",
+	)
 	.option(
 		"--reply-any",
 		"reply to peers that are not on the allowlist (does NOT lift the automated-reply depth ceiling)",
@@ -400,6 +413,14 @@ program
 		"4",
 	)
 	.option("--reply-text <text>", "fixed reply body")
+	.option(
+		"--allowed-only",
+		"print a plain message's subject and text only when the sender is on the allowlist; others print one HOLD line with just their npub. Affects printing only: --reply-any still replies and --allow-all still runs their tasks (payload not printed)",
+	)
+	.option(
+		"--full-ids",
+		"print the full sender npub and contextId on RECV lines, so a reader can reply with `agx send --context-id <id> -- <npub> <message>`",
+	)
 	.option("--once", "run a single poll and exit")
 	.option("--reset-cursor", "re-read the inbox from the beginning")
 	.option("-v, --verbose", "log transport activity")
@@ -411,6 +432,13 @@ program
 	.option("--subject <text>")
 	.option("--context-id <id>", "continue an existing thread")
 	.option("-v, --verbose")
+	// Commander reads a positional that starts with "-" as an option, so a
+	// message like "- done" or "--help" must come after "--" (and "--" after
+	// every option, since nothing past it is parsed as one).
+	.addHelpText(
+		"after",
+		'\nA message that starts with "-" goes after "--", with every option before it:\n  agx send --context-id <id> --subject <text> -- <peer> "- migration done"',
+	)
 	.action((peer, message, options) =>
 		sendCommand(peer, message, withGlobals(options)),
 	);
