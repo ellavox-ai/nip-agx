@@ -47,6 +47,9 @@ importers:
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
+      vitest:
+        specifier: ^4.1.11
+        version: 4.1.11(@opentelemetry/api@1.9.0)(@types/node@26.4.0)(happy-dom@20.11.12)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.0.14(@types/node@26.4.0)(esbuild@0.27.3)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
 
   packages/core:
     devDependencies:
@@ -58,19 +61,19 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.1.11
-        version: 4.1.11(@opentelemetry/api@1.9.0)(@types/node@26.4.0)(happy-dom@20.11.12)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.0.14(@types/node@26.4.0)(esbuild@0.27.3)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
+        version: 4.1.11(@opentelemetry/api@1.9.0)(@types/node@26.4.0)(happy-dom@20.11.12)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.0.14(@types/node@26.4.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
       zod:
         specifier: 4.4.3
         version: 4.4.3
 
   packages/nostr:
     dependencies:
-      '@nostr-agx/core':
-        specifier: workspace:*
-        version: link:../core
       '@noble/hashes':
         specifier: 2.0.1
         version: 2.0.1
+      '@nostr-agx/core':
+        specifier: workspace:*
+        version: link:../core
       nostr-tools:
         specifier: ^2.25.0
         version: 2.25.0(typescript@5.9.3)
@@ -2814,6 +2817,36 @@ snapshots:
       tinyglobby: 0.2.17
       tinyrainbow: 3.1.0
       vite: 8.0.14(@types/node@26.4.0)(esbuild@0.27.3)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0)
+      why-is-node-running: 2.3.0
+    optionalDependencies:
+      '@opentelemetry/api': 1.9.0
+      '@types/node': 26.4.0
+      happy-dom: 20.11.12
+      jsdom: 30.0.1(@noble/hashes@2.4.0)
+    transitivePeerDependencies:
+      - msw
+
+  vitest@4.1.11(@opentelemetry/api@1.9.0)(@types/node@26.4.0)(happy-dom@20.11.12)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.0.14(@types/node@26.4.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0)):
+    dependencies:
+      '@vitest/expect': 4.1.11
+      '@vitest/mocker': 4.1.11(vite@8.0.14(@types/node@26.4.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
+      '@vitest/pretty-format': 4.1.11
+      '@vitest/runner': 4.1.11
+      '@vitest/snapshot': 4.1.11
+      '@vitest/spy': 4.1.11
+      '@vitest/utils': 4.1.11
+      es-module-lexer: 2.1.0
+      expect-type: 1.3.0
+      magic-string: 0.30.21
+      obug: 2.1.1
+      pathe: 2.0.3
+      picomatch: 4.0.4
+      std-env: 4.2.0
+      tinybench: 2.9.0
+      tinyexec: 1.0.2
+      tinyglobby: 0.2.17
+      tinyrainbow: 3.1.0
+      vite: 8.0.14(@types/node@26.4.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0)
       why-is-node-running: 2.3.0
     optionalDependencies:
       '@opentelemetry/api': 1.9.0

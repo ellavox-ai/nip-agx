@@ -28,6 +28,9 @@ agx serve --allow npub1peer…           # be an agent
 npm install -g @nostr-agx/cli
 ```
 
+`agx --version` prints the installed version; the `serve` flags in
+[Use from Claude Code](#use-from-claude-code) need 0.3.0 or later.
+
 From source: `pnpm install && pnpm build` at the repository root, then run
 `node dist/agx.js` from this package's directory.
 
@@ -104,6 +107,106 @@ locally — an internal error must not leak hostnames, table names or credential
 across a trust boundary. To send a message that is part of the contract
 (`invoice not found`, `amount exceeds limit`), throw `AgxPublicError` from
 `@nostr-agx/core`; that message is forwarded verbatim.
+
+## What `serve` prints for a message
+
+Every inbound plain message prints a `RECV` line and its body, whoever sent it —
+the allowlist gates **replies and tasks**, not what you see. Two opt-in flags
+change that for a reader that acts on the output:
+
+| flag | effect |
+|---|---|
+| `--allowed-only` | a sender off the allowlist (profile + session `--allow`) prints **one** line — `HOLD  from <npub> — not on the allowlist; text withheld and not kept. To read future messages: agx identity allow <npub> (then ask them to resend)` — with no subject, body or context id. Allowed senders print exactly as before. |
+| `--full-ids` | `RECV` lines carry the full sender npub and full `contextId`, instead of `npub1abcdefg…wxyz` and the first 8 characters of the id. A `contextId` with characters outside `A-Z a-z 0-9 . _ : -` prints as `withheld (unsafe characters; reply without --context-id)`, because the sender chose it and a reader pastes it into a shell. |
+
+A held message is **not kept**: it is recorded as seen like any other, so
+allowing its sender afterwards (and restarting `serve`, which reads the allowlist
+once) shows their *next* message, never this one — `--reset-cursor` does not
+bring it back either. Ask the sender to resend once they are allowed.
+
+`--allowed-only` changes **printing only**. A held message is still counted and
+recorded as seen, `--reply-any` still auto-replies to it, and `--allow-all` still
+opens tasks to everyone (a stranger's `TASK` line prints, but its payload and the
+handler's result do not) — pair it with `--no-reply` and without `--allow-all`
+when the point is that strangers reach nothing. `DENY` lines for refused tasks
+are unchanged.
+
+### Replies and tasks are separate switches
+
+`serve` answers two kinds of traffic on its own, and each has its own flag:
+
+| flag | stops |
+|---|---|
+| `--no-reply` | the canned echo to a **plain message** (`agx send`). |
+| `--no-tasks` | every answer to a **typed task request** (`agx request`): no handler is registered — not the built-in `invoice.review` stand-in, not `agx.ping` — so an allowlisted peer's request gets no receipt and no result, and times out on their side. |
+
+`--no-reply` alone does **not** stop task answers: while it runs, an allowlisted
+peer's `agx request … invoice.review` still gets a signed canned result. Under
+`--no-tasks` the request is not consumed as a task at all; it prints like any
+other message — `RECV` with the request envelope as its body (or `HOLD` under
+`--allowed-only`), followed by `(typed task request — --no-tasks: not answered)` —
+and it never gets the plain-message echo either, even without `--no-reply`. Any
+other task-labelled message (a late or stray result, or an envelope that does not
+parse as a request) is followed by `(typed task message — --no-tasks: not
+handled)` instead. The
+banner shows `tasks  off (--no-tasks)` in place of `capabilities`.
+
+`--no-tasks` is a usage error (exit 2) with `--capability`, `--handler`,
+`--allow-all` or `--advertise`. The first three only configure capabilities that
+`--no-tasks` does not serve. `--advertise` would publish an Agent Card listing no
+capabilities, which announces an agent that answers no typed request; to be
+discoverable, advertise from a `serve` that actually serves something.
+
+Whatever the flags, a message body cannot pose as a header line: every line of
+it is indented (a break is any of `\n`, `\r`, `\v`, `\f`, U+0085, U+2028,
+U+2029), and control characters, ANSI escapes included, print as U+FFFD (`�`).
+The peer-supplied ids on header lines (`contextId`, a task's `taskId`, a
+receipt's `refEventId`) get the same treatment, and a task payload prints as
+one-line JSON.
+
+## Use from Claude Code
+
+A Claude Code session can be an AGX peer: it watches `serve` with the Monitor
+tool, where every stdout line becomes a notification in the model's context, and
+answers with `agx send`. Only let allowlisted peers put text there:
+
+```bash
+agx identity allow npub1peer…        # before starting serve; it reads the allowlist once
+agx serve --no-reply --no-tasks --allowed-only --full-ids --no-color
+#   RECV  from npub1peer…(full)  subject "Invoice 1234"  ctx 2bc8c14c9873c9fea764882abcee9fbd
+#          Hi, can you review invoice 1234?
+#          (--no-reply: observing only)
+#   HOLD  from npub1other…(full) — not on the allowlist; text withheld and not kept. To read future messages: agx identity allow npub1other… (then ask them to resend)
+#          (--no-reply: observing only)
+
+agx send --context-id 2bc8c14c9873c9fea764882abcee9fbd -- npub1peer…(full) "Reviewed — approved."
+```
+
+Put every option first and the npub and text after `--`. Without it, a message
+that starts with `-` (`- migration done`, `--help`) is read as an option: the
+send fails, or prints help, instead of sending the text.
+
+`--no-reply` keeps the canned auto-reply out of the conversation, `--no-tasks`
+means nothing is sent automatically at all (without it, an allowlisted peer's
+`agx request` is still answered by the built-in handlers), `--full-ids` gives the
+exact npub and `contextId` to reply on the same thread, and `--no-color`
+guarantees plain text. Colour is already off whenever stdout is not
+a terminal (and under `NO_COLOR`); `FORCE_COLOR=1` turns it back on.
+
+`pnpm --filter @nostr-agx/cli test:e2e` checks this whole contract against the built
+CLI (`pnpm build` first) with no network: it starts `agx relay` on a free
+localhost port, creates alice, bob and mallory under a temporary `AGX_HOME`, and
+asserts the full-id `RECV` header, mallory's text-free `HOLD`, that a forged
+header in a body stays indented, that a shell-unsafe `contextId` is withheld,
+that `agx request` to `agx.ping` and `invoice.review` times out under
+`--no-tasks` and is answered without it (and that the watch was alive and
+printed both requests the whole time), that nothing — not even a receipt —
+reaches bob, the reply round trip on the same `contextId`, that default mode
+still prints short ids, and that `agx send … -- <npub> "- migration done"` and
+`"--help"` arrive as literal text. It clears every inherited `AGX_*` variable so
+it can never reach a real relay or API. It is not part of `test:unit`.
+
+| `agx serve [--handler <file>]` | run as an agent; `--handler` binds a real runtime; `--no-reply` / `--no-tasks` stop automatic answers; `--allowed-only` / `--full-ids` shape what inbound messages print |
 
 ## Agent Cards
 
@@ -188,7 +291,7 @@ not `public` — `doctor` names all three.
 | `agx domain add \| list \| verify \| remove` | NIP-05 domains |
 | `agx search "<query>"` | search the index |
 | `agx peers list \| allowlist \| accept \| refuse \| block` | a team's trust decisions |
-| `agx serve [--handler <file>]` | run as an agent; `--handler` binds a real runtime |
+| `agx serve [--handler <file>]` | run as an agent; `--handler` binds a real runtime; `--no-reply` / `--no-tasks` stop automatic answers; `--allowed-only` / `--full-ids` shape what inbound messages print |
 | `agx send <npub> "<msg>"` / `agx request <npub> <capability>` | talk to another agent |
 | `agx relay` | a local NIP-01 relay |
 | `agx doctor` | preflight |

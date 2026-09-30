@@ -12,9 +12,21 @@ import kleur from "kleur";
 import { effectiveProfile, resolveProfileName } from "../lib/config.js";
 import { AgxCliError, EXIT } from "../lib/errors.js";
 import { loadIdentity } from "../lib/identity.js";
+import {
+	neutralizeControls,
+	oneLineJson,
+	renderInboundLines,
+} from "../lib/inbound-lines.js";
 import { heading, info, kv, say, shortNpub, warn } from "../lib/output.js";
 import { ensureDir, lockPath, profileDir } from "../lib/paths.js";
 import { toDisplayNpub, toHexPubkey } from "../lib/peer.js";
+import {
+	capabilitiesToServe,
+	noTasksConflicts,
+	PING_CAPABILITY,
+	servesPing,
+	unservedTaskNote,
+} from "../lib/serve-tasks.js";
 import { FileSeenStore, loadState, updateState } from "../lib/state.js";
 import { createTransport, makeLogger } from "../lib/transport.js";
 
@@ -45,6 +57,13 @@ export interface ServeOptions {
 	resetCursor?: boolean;
 	handler?: string;
 	verbose?: boolean;
+	/** Print only the npub of a plain message from a sender off the allowlist. */
+	allowedOnly?: boolean;
+	/** Print the full sender npub and contextId on RECV lines. */
+	fullIds?: boolean;
+	/** `false` under `--no-tasks`: register no capability handler at all, so no
+	 * typed task request is ever answered (no receipt, no result). */
+	tasks?: boolean;
 }
 
 /** What a `--handler` module default-exports: capability key → implementation. */
@@ -141,6 +160,20 @@ function acquireLock(profile: string): () => void {
 }
 
 export async function serveCommand(options: ServeOptions): Promise<void> {
+	// Checked before the lock and the relays: a contradictory command line should
+	// fail fast and touch nothing.
+	const conflicts = noTasksConflicts(options);
+	if (conflicts.length > 0) {
+		throw new AgxCliError(
+			`--no-tasks serves no capability, so it cannot be combined with ${conflicts.join(", ")}.`,
+			{
+				exitCode: EXIT.usage,
+				remediation:
+					"Drop --no-tasks to serve capabilities, or drop the flags above to only watch:\n    agx serve --no-reply --no-tasks --allowed-only --full-ids",
+			},
+		);
+	}
+	const tasksEnabled = options.tasks !== false;
 	const profileName = resolveProfileName(options.profile);
 	const profile = effectiveProfile(profileName);
 	const identity = loadIdentity(profileName);
@@ -219,17 +252,35 @@ export async function serveCommand(options: ServeOptions): Promise<void> {
 			const npub = toDisplayNpub(msg.from);
 			const isAllowed = allowed.has(msg.from);
 			say("");
-			say(
-				`${kleur.cyan("RECV ")} from ${shortNpub(npub)}${
-					msg.subject
-						? `  subject ${JSON.stringify(msg.subject)}`
-						: ""
-				}${msg.contextId ? kleur.dim(`  ctx ${msg.contextId.slice(0, 8)}`) : ""}`,
-			);
-			say(`       ${msg.text}`);
+			// `--allowed-only` changes what is PRINTED, nothing else: a held message
+			// is still counted, still recorded as seen, and still takes the reply
+			// path below (so `--reply-any` still answers it).
+			for (const line of renderInboundLines({
+				fromNpub: npub,
+				allowed: isAllowed,
+				subject: msg.subject,
+				contextId: msg.contextId,
+				text: msg.text,
+				allowedOnly: options.allowedOnly === true,
+				fullIds: options.fullIds === true,
+			})) {
+				say(line);
+			}
 
+			// A task-labelled message only reaches here when no handler consumed it.
+			// `contentType` is peer-supplied, so this is a hint for the reader, not a
+			// trust decision.
+			const taskNote = unservedTaskNote(options, msg);
+			if (taskNote) {
+				say(kleur.dim(`       ${taskNote}`));
+			}
 			if (options.reply === false) {
 				say(kleur.dim("       (--no-reply: observing only)"));
+				return;
+			}
+			// `--no-tasks` means nothing is published in answer to a task request —
+			// the plain echo reply included.
+			if (taskNote) {
 				return;
 			}
 			// Replies are allowlist-gated for the same reason denied task requests
@@ -314,7 +365,7 @@ export async function serveCommand(options: ServeOptions): Promise<void> {
 		onReceipt: (receipt: AgxIncomingReceipt) => {
 			say(
 				`${kleur.green("ACK  ")} from ${shortNpub(toDisplayNpub(receipt.from))}  ${kleur.dim(
-					`ref ${receipt.receipt.refEventId.slice(0, 8)}  ${receipt.receipt.status}`,
+					`ref ${neutralizeControls(receipt.receipt.refEventId.slice(0, 8))}  ${receipt.receipt.status}`,
 				)}`,
 			);
 		},
@@ -325,11 +376,7 @@ export async function serveCommand(options: ServeOptions): Promise<void> {
 	// the whole integration surface a runtime like Paperclip needs. Dispatch, the
 	// task lifecycle, correlation, receipts and encryption stay the library's job.
 	const handlers = await loadHandlerModule(options.handler);
-	const capabilities = options.capability?.length
-		? options.capability
-		: Object.keys(handlers).length > 0
-			? Object.keys(handlers)
-			: ["invoice.review"];
+	const capabilities = capabilitiesToServe(options, Object.keys(handlers));
 
 	for (const capability of capabilities) {
 		const custom = handlers[capability];
@@ -337,13 +384,22 @@ export async function serveCommand(options: ServeOptions): Promise<void> {
 			capability,
 			async (task: Task<Record<string, unknown>>) => {
 				stats.tasks += 1;
+				// Under `--allow-all` a stranger's task runs; `--allowed-only` still
+				// keeps what it wrote (payload, and a handler result that may echo it)
+				// off stdout.
+				const withhold =
+					options.allowedOnly === true && !allowed.has(task.from);
 				say(
 					`${kleur.magenta("TASK ")} ${kleur.bold(task.capability)} from ${shortNpub(
 						toDisplayNpub(task.from),
-					)}  ${kleur.dim(`taskId ${task.taskId.slice(0, 8)}`)}`,
+					)}  ${kleur.dim(`taskId ${neutralizeControls(task.taskId.slice(0, 8))}`)}`,
 				);
 				say(
-					kleur.dim(`       payload ${JSON.stringify(task.payload)}`),
+					kleur.dim(
+						withhold
+							? "       payload withheld (sender not on the allowlist)"
+							: `       payload ${oneLineJson(task.payload)}`,
+					),
 				);
 				if (custom) {
 					// Errors propagate to the library, which reports a THROWN error to
@@ -351,7 +407,9 @@ export async function serveCommand(options: ServeOptions): Promise<void> {
 					// here — an internal error must not leak across a trust boundary.
 					// Throw `AgxPublicError` for a message meant for the peer.
 					const output = await custom(task.payload, task);
-					say(kleur.dim(`       → ${JSON.stringify(output)}`));
+					if (!withhold) {
+						say(kleur.dim(`       → ${oneLineJson(output)}`));
+					}
 					return output;
 				}
 				// The built-in stand-in: enough to prove dispatch, honest about being
@@ -367,30 +425,51 @@ export async function serveCommand(options: ServeOptions): Promise<void> {
 			},
 		);
 	}
-	client.handle("agx.ping", async () => ({
-		ok: true,
-		agent: identity.npub,
-		at: new Date().toISOString(),
-	}));
+	if (servesPing(options)) {
+		client.handle(PING_CAPABILITY, async () => ({
+			ok: true,
+			agent: identity.npub,
+			at: new Date().toISOString(),
+		}));
+	}
 
 	heading("agx serve");
 	kv("profile", profileName);
 	kv("npub", identity.npub);
 	kv("relays", profile.relays.join(", "));
-	kv("capabilities", client.capabilities().join(", "));
+	if (tasksEnabled) {
+		kv("capabilities", client.capabilities().join(", "));
+	} else {
+		kv("tasks", "off (--no-tasks) — no typed request is answered");
+	}
 	kv(
 		"authorize",
-		options.allowAll
-			? "accept-all (EVERY peer may invoke a capability)"
-			: `allowlist (${allowed.size} peer${allowed.size === 1 ? "" : "s"}) — default-deny`,
+		!tasksEnabled
+			? `allowlist (${allowed.size} peer${allowed.size === 1 ? "" : "s"}) — gates printing and replies only`
+			: options.allowAll
+				? "accept-all (EVERY peer may invoke a capability)"
+				: `allowlist (${allowed.size} peer${allowed.size === 1 ? "" : "s"}) — default-deny`,
 	);
+	if (options.allowedOnly || options.fullIds) {
+		kv(
+			"messages",
+			[
+				options.allowedOnly
+					? "allowed-only (text from senders off the allowlist is withheld)"
+					: null,
+				options.fullIds ? "full ids" : null,
+			]
+				.filter((mode): mode is string => mode !== null)
+				.join(" · "),
+		);
+	}
 	kv("cursor", state.cursor);
 	if (options.allowAll) {
 		warn(
 			"--allow-all is set: any pubkey on these relays can invoke your capabilities.",
 		);
 	}
-	if (allowed.size === 0 && !options.allowAll) {
+	if (tasksEnabled && allowed.size === 0 && !options.allowAll) {
 		warn(
 			"The allowlist is empty, so every task request will be denied. Add a peer with `agx identity allow <npub>`.",
 		);
