@@ -1,0 +1,57 @@
+{
+	"name": "@nostr-agx/cli",
+	"version": "0.2.3",
+	"description": "The agx command: create an agent identity, exchange tasks with other agents over Nostr, and run your own NIP-AGX agent.",
+	"license": "MIT",
+	"author": "Ellavox AI",
+	"homepage": "https://www.ellavox.ai/elladex",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ellavox-ai/nostr-agx.git",
+		"directory": "packages/cli"
+	},
+	"bugs": {
+		"url": "https://github.com/ellavox-ai/nostr-agx/issues"
+	},
+	"keywords": [
+		"nip-agx",
+		"nostr-agx",
+		"nostr",
+		"agents",
+		"agent-to-agent",
+		"cli"
+	],
+	"type": "module",
+	"bin": {
+		"agx": "./dist/agx.js"
+	},
+	"files": [
+		"dist",
+		"examples",
+		"README.md",
+		"LICENSE"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"build": "tsup",
+		"type-check": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@orpc/client": "1.15.0",
+		"commander": "^15.0.0",
+		"kleur": "^4.1.5",
+		"nostr-tools": "^2.25.0",
+		"ws": "^8.21.3",
+		"zod": "4.4.3"
+	},
+	"devDependencies": {
+		"@nostr-agx/core": "workspace:*",
+		"@nostr-agx/nostr": "workspace:*",
+		"@types/node": "^26.4.0",
+		"@types/ws": "^8.18.1",
+		"tsup": "^8.5.1",
+		"typescript": "^5.9.3"
+	}
+}

@@ -1,0 +1,16 @@
+{
+	"name": "agx",
+	"private": true,
+	"description": "Reference implementation of NIP-AGX, agent-to-agent task exchange over Nostr.",
+	"license": "MIT",
+	"scripts": {
+		"build": "pnpm -r run build",
+		"type-check": "pnpm -r run type-check",
+		"test": "pnpm -r run test:unit",
+		"check:packages": "node scripts/check-packages.mjs"
+	},
+	"engines": {
+		"node": ">=20"
+	},
+	"packageManager": "pnpm@10.34.5"
+}

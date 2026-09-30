@@ -1,0 +1,63 @@
+{
+	"name": "@nostr-agx/core",
+	"version": "0.2.3",
+	"description": "Transport-agnostic core of NIP-AGX, a draft Nostr standard for agent-to-agent task exchange: task lifecycle, result matching, delivery receipts, replay protection and capability matching.",
+	"license": "MIT",
+	"author": "Ellavox AI",
+	"homepage": "https://www.ellavox.ai/elladex",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ellavox-ai/nostr-agx.git",
+		"directory": "packages/core"
+	},
+	"bugs": {
+		"url": "https://github.com/ellavox-ai/nostr-agx/issues"
+	},
+	"keywords": [
+		"nip-agx",
+		"nostr-agx",
+		"nostr",
+		"agents",
+		"agent-to-agent",
+		"a2a",
+		"protocol"
+	],
+	"type": "module",
+	"sideEffects": false,
+	"main": "./dist/index.js",
+	"module": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js",
+			"require": "./dist/index.cjs"
+		}
+	},
+	"files": [
+		"dist",
+		"SPEC.md",
+		"README.md",
+		"LICENSE",
+		"LICENSE-SPEC"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"build": "tsup",
+		"dev": "tsup --watch",
+		"type-check": "tsc --noEmit",
+		"test": "vitest run",
+		"test:unit": "vitest run"
+	},
+	"peerDependencies": {
+		"zod": "^4"
+	},
+	"devDependencies": {
+		"tsup": "^8.5.1",
+		"typescript": "^5.9.3",
+		"vitest": "^4.1.11",
+		"zod": "4.4.3"
+	}
+}

@@ -1,0 +1,74 @@
+{
+	"name": "@nostr-agx/nostr",
+	"version": "0.2.3",
+	"description": "Nostr transport for @nostr-agx/core: end-to-end encrypted task exchange between agents, with relay routing and authentication, Agent Cards and NIP-05 domain checks.",
+	"license": "MIT",
+	"author": "Ellavox AI",
+	"homepage": "https://www.ellavox.ai/elladex",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ellavox-ai/nostr-agx.git",
+		"directory": "packages/nostr"
+	},
+	"bugs": {
+		"url": "https://github.com/ellavox-ai/nostr-agx/issues"
+	},
+	"keywords": [
+		"nip-agx",
+		"nostr-agx",
+		"nostr",
+		"nip-44",
+		"nip-59",
+		"agents",
+		"agent-to-agent"
+	],
+	"type": "module",
+	"sideEffects": false,
+	"main": "./dist/index.js",
+	"module": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js",
+			"require": "./dist/index.cjs"
+		}
+	},
+	"files": [
+		"dist",
+		"README.md",
+		"LICENSE"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"build": "tsup",
+		"dev": "tsup --watch",
+		"type-check": "tsc --noEmit",
+		"test": "vitest run",
+		"test:unit": "vitest run"
+	},
+	"dependencies": {
+		"@nostr-agx/core": "workspace:*",
+		"@noble/hashes": "2.0.1",
+		"nostr-tools": "^2.25.0"
+	},
+	"peerDependencies": {
+		"ws": "^8",
+		"zod": "^4"
+	},
+	"peerDependenciesMeta": {
+		"ws": {
+			"optional": true
+		}
+	},
+	"devDependencies": {
+		"@types/ws": "^8.18.1",
+		"tsup": "^8.5.1",
+		"typescript": "^5.9.3",
+		"vitest": "^4.1.11",
+		"ws": "^8.21.3",
+		"zod": "4.4.3"
+	}
+}
