@@ -93,7 +93,9 @@ agx login --json --no-wait
 It shows the person that URL and code and, once they say they approved, runs the
 **same command again**. The re-run resumes the same code (saved in
 `pending-login.json`), polls it once, and exits `0` (logged in; the result on
-stdout), `7` (still waiting) or `4` (denied or expired: start again). Without
+stdout), `7` (still waiting) or `4` (denied or expired). A `--no-wait` run never
+replaces a code on its own: after a `4`, running the command once more starts a
+fresh code (exit 7 with a new link). Without
 `--no-wait`, `agx login --json` writes the same `actionRequired` line to
 **stderr** and waits; only the final result goes to stdout. Either way, stdout
 never contains the key or the device code.

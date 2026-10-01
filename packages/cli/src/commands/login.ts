@@ -303,6 +303,30 @@ function resultFromEntry(
 	};
 }
 
+/** The org the person asked for, if any (`--org`, or `--new-org --org-slug`). */
+function requestedOrgOf(options: LoginOptions): string | null {
+	return options.org ?? options.orgSlug ?? null;
+}
+
+/** Report a login that another agx process (or an earlier run) completed. */
+function reportFinished(
+	profileName: string,
+	base: string,
+	entry: CredentialEntry,
+	options: LoginOptions,
+): void {
+	const requestedOrg = requestedOrgOf(options);
+	report(
+		resultFromEntry(profileName, base, entry, {
+			alreadyLoggedIn: false,
+			requestedOrg:
+				requestedOrg && entry.organization?.slug !== requestedOrg
+					? requestedOrg
+					: null,
+		}),
+	);
+}
+
 function report(result: LoginResult): void {
 	const who = result.user?.email ?? result.user?.id ?? "this account";
 	const org = result.organization?.slug ?? "—";
@@ -439,15 +463,29 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
 	};
 	let pending = loadPendingLogin(profileName);
 	let resumed = false;
-	if (
-		pending &&
+	const sameCode =
+		pending !== null &&
 		pending.apiBaseUrl === base &&
-		sameRequest(pending.request, request) &&
-		Date.parse(pending.expiresAt) > rt.now()
-	) {
+		sameRequest(pending.request, request);
+	if (pending && sameCode && Date.parse(pending.expiresAt) > rt.now()) {
 		resumed = true;
+	} else if (pending && sameCode && !wait) {
+		// --no-wait re-runs report on THE code the harness already showed a
+		// person (spec §1.8): it ran out, so this run says so (exit 4) instead
+		// of swapping in a new code nobody has seen. The next run starts over.
+		removePendingLogin(profileName);
+		const done = finishedElsewhere(profileName, base, pending);
+		if (done) {
+			reportFinished(profileName, base, done, options);
+			return;
+		}
+		throw authError(
+			"The login code expired before it was approved.",
+			"Run the same command again for a fresh code:\n    agx login --no-wait",
+		);
 	} else {
-		// Another server, another request, or expired: start over.
+		// Another server or another request (or, when waiting, an expired code):
+		// start over.
 		removePendingLogin(profileName);
 		pending = {
 			...(await requestDeviceCode(base, {
@@ -522,7 +560,7 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
 		process.off("SIGINT", onSigint);
 	}
 
-	const requestedOrg = options.org ?? options.orgSlug ?? null;
+	const requestedOrg = requestedOrgOf(options);
 	if (outcome.kind === "pending") {
 		throw stillPendingError(loginActionRequired(outcome.pending, rt.now()));
 	}
@@ -538,15 +576,7 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
 			);
 		}
 		removePendingLogin(profileName);
-		report(
-			resultFromEntry(profileName, base, entry, {
-				alreadyLoggedIn: false,
-				requestedOrg:
-					requestedOrg && entry.organization?.slug !== requestedOrg
-						? requestedOrg
-						: null,
-			}),
-		);
+		reportFinished(profileName, base, entry, options);
 		return;
 	}
 

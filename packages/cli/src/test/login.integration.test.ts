@@ -580,13 +580,51 @@ describe("agx login, more", () => {
 		}
 	});
 
-	it("a pending code that has expired locally is replaced, not resumed", async () => {
+	it("--no-wait: a re-run after the code expired locally exits 4, then the next run starts over (§1.8)", async () => {
+		const first = await agx("login", "--json", "--no-wait", "--api-base-url", mock.origin);
+		expect(first.code).toBe(7);
+		const shown = onlyJson(first).actionRequired.userCode;
+		clock.advance(1801_000);
+
+		const expired = await agx("login", "--json", "--no-wait", "--api-base-url", mock.origin);
+		expect(expired.code).toBe(4);
+		expect(expired.stderr).toMatch(/expired before it was approved/);
+		// No new code was requested or shown, and nothing was polled.
+		expect(jsonDocuments(expired.stdout)).toEqual([]);
+		expect(`${expired.stdout}${expired.stderr}`).not.toContain(shown);
+		expect(mock.calls("/api/auth/device/code")).toHaveLength(1);
+		expect(mock.calls("/api/auth/device/token")).toHaveLength(0);
+		expect(existsSync(pendingFile())).toBe(false);
+
+		const fresh = await agx("login", "--json", "--no-wait", "--api-base-url", mock.origin);
+		expect(fresh.code).toBe(7);
+		expect(onlyJson(fresh).actionRequired.userCode).not.toBe(shown);
+		expect(mock.calls("/api/auth/device/code")).toHaveLength(2);
+	});
+
+	it("blocking: a pending code that expired locally is replaced, not resumed", async () => {
 		expect((await agx("login", "--json", "--no-wait", "--api-base-url", mock.origin)).code).toBe(7);
 		clock.advance(1801_000);
-		const run = await agx("login", "--json", "--no-wait", "--api-base-url", mock.origin);
+		mock.onTokenPoll = (_code, n) => {
+			if (n === 1) {
+				mock.approve();
+			}
+		};
+		const run = await agx("login", "--json", "--api-base-url", mock.origin);
+		expect(run.code, run.stderr).toBe(0);
+		expect(mock.calls("/api/auth/device/code")).toHaveLength(2);
+		const polled = new Set(
+			mock.calls("/api/auth/device/token").map((c) => (c.body as { device_code: string }).device_code),
+		);
+		expect([...polled]).toEqual([mock.codes[1]?.deviceCode]);
+	});
+
+	it("--no-wait: a different request still starts a fresh code even when the old one expired", async () => {
+		expect((await agx("login", "--json", "--no-wait", "--api-base-url", mock.origin)).code).toBe(7);
+		clock.advance(1801_000);
+		const run = await agx("login", "--json", "--no-wait", "--api-base-url", mock.origin, "--org", "acme");
 		expect(run.code).toBe(7);
 		expect(mock.calls("/api/auth/device/code")).toHaveLength(2);
-		expect(mock.calls("/api/auth/device/token")).toHaveLength(0);
 	});
 
 	it("an expired login is refused for API calls (exit 4) and replaced by agx login", async () => {
