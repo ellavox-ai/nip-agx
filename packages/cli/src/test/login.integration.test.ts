@@ -232,6 +232,14 @@ describe("agx login", () => {
 	});
 
 	it("(d) concurrent resumes poll once and mint one key", async () => {
+		// The waiting run gives the polling one ~25 fake seconds in 1 s steps;
+		// make each step 20 ms of real time, so the poller's real HTTP round
+		// trip fits comfortably even on a slow machine.
+		restoreClock();
+		const slower = fakeClock(clock.now(), 20);
+		restoreClock = useClock(slower);
+		await mock.close();
+		mock = await startMockIndexServer({ now: slower.now });
 		const first = await agx("login", "--json", "--no-wait", "--api-base-url", mock.origin);
 		expect(first.code).toBe(7);
 		mock.approve();

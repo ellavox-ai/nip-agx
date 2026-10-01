@@ -38,11 +38,14 @@ export function sandbox(): { home: string; restore: () => void } {
 
 /**
  * A controllable clock shared by the CLI's runtime and the mock server:
- * `sleep(ms)` advances it by `ms` and yields to the event loop (so real I/O,
- * such as the mock server answering, still happens), and every sleep is
- * recorded for assertions.
+ * `sleep(ms)` advances it by `ms` and yields to the event loop for
+ * `realDelayMs` of real time (so real I/O, such as the mock server answering,
+ * still happens), and every sleep is recorded for assertions.
  */
-export function fakeClock(start = Date.parse("2026-09-30T18:00:00.000Z")) {
+export function fakeClock(
+	start = Date.parse("2026-09-30T18:00:00.000Z"),
+	realDelayMs = 2,
+) {
 	let now = start;
 	const sleeps: number[] = [];
 	const clock = {
@@ -57,7 +60,7 @@ export function fakeClock(start = Date.parse("2026-09-30T18:00:00.000Z")) {
 			}
 			sleeps.push(ms);
 			now += ms;
-			await new Promise((r) => setTimeout(r, 2));
+			await new Promise((r) => setTimeout(r, realDelayMs));
 		},
 	};
 	return clock;
