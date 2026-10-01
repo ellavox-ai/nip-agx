@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { RECENTLY_EXPIRED_MS } from "../commands/login.js";
 import { setRpcTimeoutForTests } from "../lib/api.js";
 import { fileMode } from "../lib/paths.js";
 import {
@@ -856,6 +857,34 @@ describe("agx login, more", () => {
 		expect(fresh.code).toBe(7);
 		expect(onlyJson(fresh).actionRequired.userCode).not.toBe(shown);
 		expect(mock.calls("/api/auth/device/code")).toHaveLength(2);
+	});
+
+	it.each([
+		["23 h 59 min", 4, RECENTLY_EXPIRED_MS - 60_000],
+		["exactly 24 h", 4, RECENTLY_EXPIRED_MS],
+		["24 h and a second", 7, RECENTLY_EXPIRED_MS + 1000],
+		["a month", 7, 30 * 86_400_000],
+	])("--no-wait: a code that expired %s ago → exit %i (older ones were abandoned: start over)", async (_label, exit, sinceExpiry) => {
+		const first = await agx("login", "--json", "--no-wait", "--api-base-url", mock.origin);
+		expect(first.code).toBe(7);
+		const shown = onlyJson(first).actionRequired.userCode;
+		clock.advance(1800_000 + sinceExpiry);
+
+		const later = await agx("login", "--json", "--no-wait", "--api-base-url", mock.origin);
+		expect(later.code, later.stderr).toBe(exit);
+		expect(mock.calls("/api/auth/device/token")).toHaveLength(0);
+		if (exit === 4) {
+			expect(jsonDocuments(later.stdout)).toEqual([]);
+			expect(mock.calls("/api/auth/device/code")).toHaveLength(1);
+			expect(existsSync(pendingFile())).toBe(false);
+		} else {
+			// The first run of a later session: a fresh code, shown and saved.
+			const action = onlyJson(later).actionRequired;
+			expect(action).toMatchObject({ reason: "LOGIN_APPROVAL_REQUIRED", expiresIn: 1800 });
+			expect(action.userCode).not.toBe(shown);
+			expect(mock.calls("/api/auth/device/code")).toHaveLength(2);
+			expect(readJson(pendingFile()).deviceCode).toBe(mock.codes[1]?.deviceCode);
+		}
 	});
 
 	it("blocking: a pending code that expired locally is replaced, not resumed", async () => {

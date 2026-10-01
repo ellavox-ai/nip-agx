@@ -149,6 +149,16 @@ export function loginActionRequired(
 	};
 }
 
+/**
+ * How long after a pending code expired a `--no-wait` re-run still reports
+ * THAT code as expired (exit 4) instead of starting over. The server keeps a
+ * code's row this long after expiry (spec §1.3), so within it the run is
+ * plausibly the harness following up on the code it showed a person; a
+ * pending file older than that was abandoned in an earlier session, and the
+ * run requests a fresh code (exit 7) as a first run would.
+ */
+export const RECENTLY_EXPIRED_MS = 24 * 60 * 60 * 1000;
+
 function stillPendingError(action: ActionRequired): HumanActionRequiredError {
 	return new HumanActionRequiredError(
 		`This login needs approval in the browser. Open the link and check the code (expires in ${minutesLeft(action.expiresIn ?? 0)}):`,
@@ -511,9 +521,15 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
 		pending !== null &&
 		pending.apiBaseUrl === base &&
 		sameRequest(pending.request, request);
-	if (pending && sameCode && Date.parse(pending.expiresAt) > rt.now()) {
+	/** How long ago this request's pending code expired: negative while it is
+	 * live, NaN when there is none (or its date is unreadable). */
+	const expiredForMs =
+		pending && sameCode
+			? rt.now() - Date.parse(pending.expiresAt)
+			: Number.NaN;
+	if (pending && expiredForMs < 0) {
 		resumed = true;
-	} else if (pending && sameCode && !wait) {
+	} else if (pending && !wait && expiredForMs <= RECENTLY_EXPIRED_MS) {
 		// --no-wait re-runs report on THE code the harness already showed a
 		// person (spec §1.8): it ran out, so this run says so (exit 4) instead
 		// of swapping in a new code nobody has seen. The next run starts over.
@@ -528,8 +544,9 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
 			"Run the same command again for a fresh code:\n    agx login --no-wait",
 		);
 	} else {
-		// Another server or another request (or, when waiting, an expired code):
-		// start over.
+		// Another server or another request, a code that expired more than
+		// RECENTLY_EXPIRED_MS ago (abandoned in an earlier session), or, when
+		// waiting, any expired code: start over.
 		removePendingLogin(profileName);
 		pending = {
 			...(await requestDeviceCode(base, {
