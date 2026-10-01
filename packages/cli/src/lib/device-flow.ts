@@ -402,12 +402,19 @@ export interface PollOptions {
 	 * could be written (the wait plus one request), so a lock holder can keep
 	 * its heartbeat fresh. */
 	heartbeat?: (nextGapMs: number) => void;
+	/** The command the remediations tell a person to re-run, to resume this
+	 * code or, once it is spent, to get a fresh one. Default `agx login`; a
+	 * `--no-wait` run passes `agx login --no-wait`, so a harness is never
+	 * pointed at the blocking form. */
+	rerun?: string;
 }
 
-function codeExpired(): AgxCliError {
+const DEFAULT_RERUN = "agx login";
+
+function codeExpired(rerun: string): AgxCliError {
 	return authError(
 		"The login code expired before it was approved.",
-		"Start again for a fresh code:\n    agx login",
+		`Run the same command again for a fresh code:\n    ${rerun}`,
 	);
 }
 
@@ -432,6 +439,7 @@ export async function pollDeviceToken(
 ): Promise<PollOutcome> {
 	const deps = resolveDeps(partialDeps);
 	const host = new URL(base).host;
+	const rerun = options.rerun ?? DEFAULT_RERUN;
 	let current: PendingLogin = { ...pending };
 	const deadline = Date.parse(current.expiresAt);
 	let failures = 0;
@@ -459,7 +467,7 @@ export async function pollDeviceToken(
 			throw interrupted();
 		}
 		if (deps.now() >= deadline) {
-			throw codeExpired();
+			throw codeExpired(rerun);
 		}
 
 		current = { ...current, lastPolledAt: iso(deps.now()) };
@@ -486,7 +494,7 @@ export async function pollDeviceToken(
 					response === null
 						? `Cannot reach ${host} to finish the login${failures > 1 ? ` (${failures} attempts)` : ""}.`
 						: `${host} keeps failing (HTTP ${response.status}) while finishing the login.`,
-					"The code stays valid until it expires. Resume it with the same command:\n    agx login",
+					`The code stays valid until it expires. Resume it with the same command:\n    ${rerun}`,
 				);
 			}
 			spacingMs = Math.min(
@@ -569,11 +577,11 @@ export async function pollDeviceToken(
 				continue;
 			}
 			case "expired_token":
-				throw codeExpired();
+				throw codeExpired(rerun);
 			case "access_denied":
 				throw authError(
 					"The login was denied in the browser.",
-					"Start again if that was a mistake:\n    agx login",
+					`If that was a mistake, run the same command again for a fresh code:\n    ${rerun}`,
 				);
 			case "invalid_grant":
 				if (options.recover?.()) {
@@ -581,7 +589,7 @@ export async function pollDeviceToken(
 				}
 				throw authError(
 					"The server no longer accepts this login code (already used, or unknown).",
-					"Start again:\n    agx login",
+					`Run the same command again for a fresh code:\n    ${rerun}`,
 				);
 			default:
 				throw new AgxCliError(
@@ -589,7 +597,7 @@ export async function pollDeviceToken(
 					{
 						exitCode: EXIT.remote,
 						remediation:
-							"Upgrade agx (npm install -g @nostr-agx/cli), then start again:\n    agx login",
+							`Upgrade agx (npm install -g @nostr-agx/cli), then start again:\n    ${rerun}`,
 					},
 				);
 		}

@@ -216,6 +216,9 @@ describe("agx login", () => {
 		const denied = await agx("login", "--json", "--no-wait", "--api-base-url", mock.origin);
 		expect(denied.code).toBe(4);
 		expect(denied.stderr).toMatch(/denied/);
+		// A harness driving --no-wait is told to re-run THAT, never the blocking form.
+		expect(denied.stderr).toContain("same command again for a fresh code");
+		expect(denied.stderr).toContain("agx login --no-wait");
 		expect(existsSync(pendingFile())).toBe(false);
 		expect(existsSync(credentialsFile())).toBe(false);
 	});
@@ -229,7 +232,24 @@ describe("agx login", () => {
 		const run = await agx("login", "--json", "--api-base-url", mock.origin);
 		expect(run.code).toBe(4);
 		expect(run.stderr).toMatch(/expired/);
+		expect(run.stderr).toMatch(/^ +agx login$/m);
+		expect(run.stderr).not.toContain("--no-wait");
 		expect(existsSync(pendingFile())).toBe(false);
+	});
+
+	it("(c) --no-wait: a resumed code the server reports expired → exit 4, and the fix is the same --no-wait command", async () => {
+		expect((await agx("login", "--json", "--no-wait", "--api-base-url", mock.origin)).code).toBe(7);
+		mock.expire();
+		const run = await agx("login", "--json", "--no-wait", "--api-base-url", mock.origin);
+		expect(run.code).toBe(4);
+		expect(run.stderr).toMatch(/expired before it was approved/);
+		expect(run.stderr).toMatch(/^ +agx login --no-wait$/m);
+		expect(mock.calls("/api/auth/device/token")).toHaveLength(1);
+		expect(existsSync(pendingFile())).toBe(false);
+
+		const fresh = await agx("login", "--json", "--no-wait", "--api-base-url", mock.origin);
+		expect(fresh.code).toBe(7);
+		expect(mock.calls("/api/auth/device/code")).toHaveLength(2);
 	});
 
 	it("(c) a code that runs out locally is never polled past its deadline", async () => {
@@ -846,6 +866,7 @@ describe("agx login, more", () => {
 		const expired = await agx("login", "--json", "--no-wait", "--api-base-url", mock.origin);
 		expect(expired.code).toBe(4);
 		expect(expired.stderr).toMatch(/expired before it was approved/);
+		expect(expired.stderr).toMatch(/^ +agx login --no-wait$/m);
 		// No new code was requested or shown, and nothing was polled.
 		expect(jsonDocuments(expired.stdout)).toEqual([]);
 		expect(`${expired.stdout}${expired.stderr}`).not.toContain(shown);

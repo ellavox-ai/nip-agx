@@ -283,6 +283,41 @@ describe("pollDeviceToken", () => {
 		expect((await exitOf(pollDeviceToken(BASE, pending(), {}, h.deps))).exitCode).toBe(exit);
 	});
 
+	it.each(["expired_token", "access_denied", "invalid_grant"])(
+		"%s: the remediation re-runs the caller's own command, --no-wait included",
+		async (error) => {
+			const blocking = harness([oauth(error)]);
+			const plain = await exitOf(pollDeviceToken(BASE, pending(), {}, blocking.deps));
+			expect(plain.remediation).toMatch(/same command again/);
+			expect(plain.remediation).toMatch(/\n {4}agx login$/);
+
+			const resumed = harness([oauth(error)]);
+			const noWait = await exitOf(
+				pollDeviceToken(BASE, pending(), { once: true, rerun: "agx login --no-wait" }, resumed.deps),
+			);
+			expect(noWait.exitCode).toBe(EXIT.auth);
+			expect(noWait.remediation).toMatch(/same command again/);
+			expect(noWait.remediation).toMatch(/\n {4}agx login --no-wait$/);
+		},
+	);
+
+	it("the local deadline and a failed poll quote the caller's command too", async () => {
+		const h = harness([]);
+		h.advance(1800_000);
+		const expired = await exitOf(
+			pollDeviceToken(BASE, pending(), { once: true, rerun: "agx login --no-wait" }, h.deps),
+		);
+		expect(expired.exitCode).toBe(EXIT.auth);
+		expect(expired.remediation).toMatch(/\n {4}agx login --no-wait$/);
+
+		const down = harness([new TypeError("fetch failed")]);
+		const failed = await exitOf(
+			pollDeviceToken(BASE, pending(), { once: true, rerun: "agx login --no-wait" }, down.deps),
+		);
+		expect(failed.exitCode).toBe(EXIT.network);
+		expect(failed.remediation).toMatch(/\n {4}agx login --no-wait$/);
+	});
+
 	it("invalid_grant after another process finished: recovered, not an error", async () => {
 		const h = harness([oauth("invalid_grant", { error_description: "Device code already used" })]);
 		const outcome = await pollDeviceToken(BASE, pending(), { recover: () => true }, h.deps);

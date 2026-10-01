@@ -150,6 +150,15 @@ export function loginActionRequired(
 }
 
 /**
+ * The command a remediation tells a person to re-run: the same mode as this
+ * run, so a harness that drives `--no-wait` is never pointed at the blocking
+ * form (which would sit polling inside the harness).
+ */
+function rerunCommand(wait: boolean): string {
+	return wait ? "agx login" : "agx login --no-wait";
+}
+
+/**
  * How long after a pending code expired a `--no-wait` re-run still reports
  * THAT code as expired (exit 4) instead of starting over. The server keeps a
  * code's row this long after expiry (spec §1.3), so within it the run is
@@ -163,7 +172,7 @@ function stillPendingError(action: ActionRequired): HumanActionRequiredError {
 	return new HumanActionRequiredError(
 		`This login needs approval in the browser. Open the link and check the code (expires in ${minutesLeft(action.expiresIn ?? 0)}):`,
 		action,
-		"Once it is approved, re-run the same command to finish:\n    agx login --no-wait",
+		`Once it is approved, re-run the same command to finish:\n    ${rerunCommand(false)}`,
 	);
 }
 
@@ -214,13 +223,15 @@ const LOCK_RETRY_MS = 1_000;
 /**
  * Poll the code while holding the per-profile lock, so two `agx login` runs
  * never poll the same code. A run that finds the lock taken waits for the
- * holder, then reports what it achieved.
+ * holder, then reports what it achieved. `once` is a `--no-wait` run; `rerun`
+ * is the command its remediations quote.
  */
 async function pollWithLock(
 	profileName: string,
 	base: string,
 	pending: PendingLogin,
 	once: boolean,
+	rerun: string,
 	signal: AbortSignal,
 ): Promise<
 	| PollOutcome
@@ -245,15 +256,12 @@ async function pollWithLock(
 			return { kind: "finished", entry: done };
 		}
 		if (!pendingStillThere(profileName, pending)) {
-			throw authError(
-				"This login ended in another agx process without a key (denied or expired).",
-				"Start again:\n    agx login",
-			);
+			throw endedElsewhereError(rerun);
 		}
 		if (rt.now() >= Date.parse(pending.expiresAt)) {
 			throw authError(
 				"The login code expired before it was approved.",
-				"Start again for a fresh code:\n    agx login",
+				`Run the same command again for a fresh code:\n    ${rerun}`,
 			);
 		}
 		if (once && rt.now() >= patienceUntil) {
@@ -280,10 +288,7 @@ async function pollWithLock(
 		}
 		const fresh = loadPendingLogin(profileName);
 		if (!fresh || fresh.deviceCode !== pending.deviceCode) {
-			throw authError(
-				"This login ended in another agx process without a key (denied or expired).",
-				"Start again:\n    agx login",
-			);
+			throw endedElsewhereError(rerun);
 		}
 		if (once && waited) {
 			// The other process just spent this code's poll; polling again now
@@ -295,6 +300,7 @@ async function pollWithLock(
 			fresh,
 			{
 				once,
+				rerun,
 				persist: (next) => savePendingLogin(profileName, next),
 				recover: () => finishedElsewhere(profileName, base, fresh) !== null,
 				heartbeat: (nextGapMs) => {
@@ -306,6 +312,13 @@ async function pollWithLock(
 	} finally {
 		held.release();
 	}
+}
+
+function endedElsewhereError(rerun: string): AgxCliError {
+	return authError(
+		"This login ended in another agx process without a key (denied or expired).",
+		`Run the same command again for a fresh code:\n    ${rerun}`,
+	);
 }
 
 /** Stderr, `--json` or not (the exit-7 JSON carries no remediation): which
@@ -541,7 +554,7 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
 		}
 		throw authError(
 			"The login code expired before it was approved.",
-			"Run the same command again for a fresh code:\n    agx login --no-wait",
+			`Run the same command again for a fresh code:\n    ${rerunCommand(wait)}`,
 		);
 	} else {
 		// Another server or another request, a code that expired more than
@@ -610,6 +623,7 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
 			base,
 			pending,
 			!wait,
+			rerunCommand(wait),
 			controller.signal,
 		);
 	} catch (error) {
@@ -644,7 +658,7 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
 		if (!entry) {
 			throw authError(
 				"The login finished in another agx process, but its credential is not on disk.",
-				"agx login",
+				rerunCommand(wait),
 			);
 		}
 		removePendingLogin(profileName);
