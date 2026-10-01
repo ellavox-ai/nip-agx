@@ -463,7 +463,7 @@ default 30m); without `--wait` the command exits 7 with the link.
 | 5 | the server (or a relay) could not be reached |
 | 6 | the server refused the request on its merits |
 | 7 | **a person has to act in a browser first**; not a failure |
-| 130 | interrupted (Ctrl-C) |
+| 130 | interrupted (Ctrl-C; a waiting `agx login` also stops this way on SIGTERM or SIGHUP, keeping its code) |
 
 With `--json`, exit 7 prints exactly one object on stdout:
 
@@ -517,6 +517,12 @@ on their behalf.
 
 `credentials.json` and `pending-login.json` are secrets: never paste, upload or
 print them. `agx whoami` answers every question they would.
+
+`pending-login.lock` carries a heartbeat that its holder refreshes on every
+poll. A lock whose heartbeat has run out (a minute or more, depending on the
+poll interval), whose process is gone, or that names the current process
+without being held by it, is abandoned: the next `agx login` takes it over,
+`agx doctor` reports it, and `agx doctor --fix-perms` removes it.
 
 `serve` persists its cursor and seen-event ids after every poll, so a restart
 neither re-drains the inbox nor re-answers messages it already handled. One

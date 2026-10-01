@@ -9,7 +9,7 @@ import {
 	resolveApiCredentials,
 	resolveProfileName,
 } from "../lib/config.js";
-import { loadPendingLogin } from "../lib/device-flow.js";
+import { inspectLock, loadPendingLogin } from "../lib/device-flow.js";
 import { AgxCliError, EXIT } from "../lib/errors.js";
 import { loadIdentityFile } from "../lib/identity.js";
 import { heading, json, say } from "../lib/output.js";
@@ -19,7 +19,9 @@ import {
 	credentialsPath,
 	identityPath,
 	isTooPermissive,
+	pendingLoginLockPath,
 	pendingLoginPath,
+	removePrivateFile,
 } from "../lib/paths.js";
 import { runtime } from "../lib/runtime.js";
 import { loadState } from "../lib/state.js";
@@ -395,6 +397,28 @@ export async function doctorCommand(options: DoctorOptions): Promise<void> {
 			detail: `an unfinished login code expired at ${pending.expiresAt}`,
 			remediation: "agx login",
 		});
+	}
+	// A poll lock nobody holds any more (a crash, a reused pid). agx login
+	// takes such a lock over by itself; this names it, and --fix-perms clears it.
+	const loginLock = pendingLoginLockPath(profileName);
+	const lock = inspectLock(loginLock);
+	if (lock?.stale) {
+		const holder = `${lock.pid !== null ? `agx process ${lock.pid}` : "an agx process"}${lock.at ? `, last heartbeat ${lock.at}` : ""}`;
+		if (options.fixPerms) {
+			removePrivateFile(loginLock);
+			checks.push({
+				name: "login lock",
+				verdict: "pass",
+				detail: `removed ${loginLock}, abandoned by ${holder}`,
+			});
+		} else {
+			checks.push({
+				name: "login lock",
+				verdict: "warn",
+				detail: `${loginLock} was abandoned by ${holder}`,
+				remediation: "agx doctor --fix-perms   (removes it; agx login also takes it over)",
+			});
+		}
 	}
 	if (creds && apiStatus !== null) {
 		try {

@@ -1,4 +1,4 @@
-import { chmodSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { updateProfile } from "../lib/config.js";
@@ -126,6 +126,34 @@ describe("agx doctor", () => {
 		expect(perms?.detail).toContain("credentials.json");
 		expect(perms?.detail).toContain("pending-login.json");
 		expect(check(checks, "pending login")).toMatchObject({ verdict: "warn", remediation: "agx login" });
+	});
+
+	it("reports an abandoned login lock, and --fix-perms removes it; a live one is left alone", async () => {
+		login("2099-01-01T00:00:00.000Z");
+		mock.setRpc("agentIndex/searchListings", () => ({ output: { listings: [], total: 0 } }));
+		const lockPath = join(box.home, "profiles", "default", "pending-login.lock");
+		mkdirSync(join(box.home, "profiles", "default"), { recursive: true });
+
+		// Live: pid 1 exists, and its heartbeat is fresh.
+		writeFileSync(
+			lockPath,
+			JSON.stringify({ pid: 1, at: new Date(clock.now()).toISOString(), staleAfter: new Date(clock.now() + 60_000).toISOString() }),
+		);
+		expect(check((await doctor()).checks, "login lock")).toBeUndefined();
+
+		// Abandoned: the heartbeat ran out.
+		clock.advance(120_000);
+		const stale = check((await doctor()).checks, "login lock");
+		expect(stale).toMatchObject({ verdict: "warn" });
+		expect(stale?.detail).toContain(lockPath);
+		expect(stale?.detail).toMatch(/agx process 1/);
+		expect(stale?.remediation).toMatch(/--fix-perms/);
+		expect(existsSync(lockPath)).toBe(true);
+
+		const fixed = await agx("doctor", "--fix-perms", "--json");
+		const doc = jsonDocuments(fixed.stdout)[0] as { checks: Check[] };
+		expect(check(doc.checks, "login lock")).toMatchObject({ verdict: "pass" });
+		expect(existsSync(lockPath)).toBe(false);
 	});
 
 	it("not logged in: fails with agx login", async () => {

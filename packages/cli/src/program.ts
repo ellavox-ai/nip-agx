@@ -587,7 +587,10 @@ export function buildProgram(): Command {
 	program
 		.command("doctor")
 		.description("check everything this workflow depends on")
-		.option("--fix-perms", "repair file permissions under ~/.agx")
+		.option(
+			"--fix-perms",
+			"repair file permissions under ~/.agx, and remove an abandoned login lock",
+		)
 		.action((options) => doctorCommand(withGlobals(options)));
 
 	return program;

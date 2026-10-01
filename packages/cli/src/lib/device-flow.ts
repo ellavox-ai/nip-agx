@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import {
 	closeSync,
 	existsSync,
@@ -397,6 +398,10 @@ export interface PollOptions {
 	persist?: (pending: PendingLogin) => void;
 	/** After `invalid_grant`: did another process already store this login? */
 	recover?: () => boolean;
+	/** Called before every wait-then-poll with how long until the next one
+	 * could be written (the wait plus one request), so a lock holder can keep
+	 * its heartbeat fresh. */
+	heartbeat?: (nextGapMs: number) => void;
 }
 
 function codeExpired(): AgxCliError {
@@ -442,6 +447,7 @@ export async function pollDeviceToken(
 			Math.max(0, reference + gapMs - deps.now()),
 			Math.max(0, deadline - deps.now()),
 		);
+		options.heartbeat?.(waitMs + REQUEST_TIMEOUT_MS);
 		if (waitMs > 0) {
 			try {
 				await deps.sleep(waitMs, deps.signal);
@@ -616,70 +622,209 @@ export function removePendingLogin(profile: string): boolean {
 }
 
 // ------------------------------------------------------------------- lock
+//
+// `pending-login.lock` lets one process poll a code at a time. The holder
+// writes a heartbeat (`at`) on every poll, with `staleAfter`: when, if it has
+// not written again, the lock counts as abandoned. A process id alone cannot
+// tell: after a crash the id may be reused (or, in a container, be the same
+// one every run), and pid 1 answers EPERM. So a lock is stale when ANY of:
+//   - its heartbeat has run out, whatever the pid says;
+//   - it names this very process, which does not hold it (an earlier run that
+//     died with the same pid);
+//   - its process no longer exists.
 
-/** A lock younger than this whose owner cannot be read is still being written. */
+/** A lock whose owner cannot be read, younger than this, is still being written. */
 const LOCK_GRACE_MS = 5_000;
+/** A heartbeat covers twice the holder's next planned wait, at least a minute,
+ * plus slack for one request. */
+const LOCK_MIN_HORIZON_MS = 60_000;
+const LOCK_SLACK_MS = 15_000;
+/** No heartbeat may hold the lock for longer than this. */
+const LOCK_MAX_HORIZON_MS = 10 * 60_000;
 
-function lockIsStale(path: string): boolean {
+/** How long after a heartbeat the lock still counts as held, when the holder
+ * expects to write the next one within `nextGapMs`. */
+export function lockHorizonMs(nextGapMs: number): number {
+	return Math.min(
+		Math.max(2 * nextGapMs, LOCK_MIN_HORIZON_MS) + LOCK_SLACK_MS,
+		LOCK_MAX_HORIZON_MS,
+	);
+}
+
+interface LockRecord {
+	pid: number;
+	/** Which acquisition this is: the pid alone is not unique in-process. */
+	token: string;
+	at: string;
+	staleAfter: string;
+}
+
+/** The locks this process holds: path → token. */
+const heldLocks = new Map<string, string>();
+
+export interface LockInfo {
+	pid: number | null;
+	/** The last heartbeat, when the lock records one. */
+	at: string | null;
+	stale: boolean;
+	/** Why it is stale (null while it is live). */
+	reason: "unreadable" | "own-pid" | "heartbeat" | "dead-pid" | null;
+}
+
+/** What the lock file at `path` says, or null when there is none. */
+export function inspectLock(path: string): LockInfo | null {
 	let raw: string;
+	let mtimeMs: number;
 	try {
 		raw = readFileSync(path, "utf8");
+		mtimeMs = statSync(path).mtimeMs;
 	} catch {
-		return true;
+		return null;
 	}
-	let pid: unknown;
+	let record: Partial<Record<keyof LockRecord, unknown>> = {};
 	try {
-		pid = (JSON.parse(raw) as { pid?: unknown }).pid;
-	} catch {
-		pid = undefined;
-	}
-	if (typeof pid !== "number") {
-		try {
-			return Date.now() - statSync(path).mtimeMs > LOCK_GRACE_MS;
-		} catch {
-			return true;
+		const parsed: unknown = JSON.parse(raw);
+		if (parsed !== null && typeof parsed === "object") {
+			record = parsed as typeof record;
 		}
+	} catch {
+		// unreadable: judged by its age below
+	}
+	const pid =
+		typeof record.pid === "number" &&
+		Number.isInteger(record.pid) &&
+		record.pid > 0
+			? record.pid
+			: null;
+	const at = typeof record.at === "string" ? record.at : null;
+	const verdict = (reason: LockInfo["reason"]): LockInfo => ({
+		pid,
+		at,
+		stale: reason !== null,
+		reason,
+	});
+
+	if (pid === null) {
+		// Being written this instant, or garbage once it has sat a while.
+		return verdict(Date.now() - mtimeMs > LOCK_GRACE_MS ? "unreadable" : null);
+	}
+	if (pid === process.pid) {
+		const ours = heldLocks.get(path);
+		return verdict(ours !== undefined && ours === record.token ? null : "own-pid");
+	}
+	const now = runtime().now();
+	const atMs = at ? Date.parse(at) : Number.NaN;
+	let expired: boolean;
+	if (Number.isFinite(atMs)) {
+		const declared =
+			typeof record.staleAfter === "string"
+				? Date.parse(record.staleAfter)
+				: Number.NaN;
+		const staleAt = Math.min(
+			Number.isFinite(declared) ? declared : atMs + lockHorizonMs(0),
+			atMs + LOCK_MAX_HORIZON_MS,
+		);
+		expired = now > staleAt || atMs - now > LOCK_MAX_HORIZON_MS;
+	} else {
+		// No heartbeat recorded: the file's own age stands in for one.
+		expired = Date.now() > mtimeMs + lockHorizonMs(0);
+	}
+	if (expired) {
+		return verdict("heartbeat");
 	}
 	try {
 		process.kill(pid, 0);
-		return false;
+		return verdict(null);
 	} catch (error) {
 		// EPERM: the process exists but is not ours, so the lock is live.
-		return (error as NodeJS.ErrnoException).code !== "EPERM";
+		return verdict(
+			(error as NodeJS.ErrnoException).code === "EPERM" ? null : "dead-pid",
+		);
+	}
+}
+
+/** The per-profile poll lock, held by this process. */
+export interface PollLock {
+	readonly path: string;
+	/** Refresh the heartbeat; the next one is due within `nextGapMs`. False if
+	 * another process has since taken the lock over (then nothing is written). */
+	heartbeat(nextGapMs: number): boolean;
+	/** Remove the lock, if it is still ours. Idempotent. */
+	release(): void;
+}
+
+function lockRecord(token: string, nextGapMs: number): LockRecord {
+	const now = runtime().now();
+	return {
+		pid: process.pid,
+		token,
+		at: iso(now),
+		staleAfter: iso(now + lockHorizonMs(nextGapMs)),
+	};
+}
+
+function ownsLock(path: string, token: string): boolean {
+	try {
+		return (
+			(JSON.parse(readFileSync(path, "utf8")) as { token?: unknown }).token ===
+			token
+		);
+	} catch {
+		return false;
 	}
 }
 
 /**
  * Take the per-profile poll lock with `O_EXCL`, so only one process polls a
- * code. Returns its release function, or null while another live process holds
- * it. A lock left behind by a dead process is taken over.
+ * code. Returns the held lock, or null while another live holder has it. A
+ * stale lock ({@link inspectLock}) is taken over.
  */
-export function tryAcquireLock(path: string): (() => void) | null {
+export function tryAcquireLock(path: string, nextGapMs = 0): PollLock | null {
 	ensureDir(dirname(path));
 	for (let attempt = 0; attempt < 2; attempt++) {
+		const token = randomBytes(8).toString("hex");
 		try {
 			const fd = openSync(path, "wx", 0o600);
 			try {
-				writeSync(
-					fd,
-					JSON.stringify({ pid: process.pid, at: new Date().toISOString() }),
-				);
+				writeSync(fd, JSON.stringify(lockRecord(token, nextGapMs)));
 			} finally {
 				closeSync(fd);
 			}
+			heldLocks.set(path, token);
 			let released = false;
-			return () => {
-				if (!released) {
+			return {
+				path,
+				heartbeat(gapMs) {
+					if (released || !ownsLock(path, token)) {
+						return false;
+					}
+					writePrivateJson(path, lockRecord(token, gapMs));
+					return true;
+				},
+				release() {
+					if (released) {
+						return;
+					}
 					released = true;
-					removePrivateFile(path);
-				}
+					if (heldLocks.get(path) === token) {
+						heldLocks.delete(path);
+					}
+					// Never delete a lock another process has taken over since.
+					if (ownsLock(path, token)) {
+						removePrivateFile(path);
+					}
+				},
 			};
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
 				throw error;
 			}
-			if (!lockIsStale(path)) {
-				return null;
+			if (!inspectLock(path)?.stale) {
+				// Live — or gone this instant, in which case the next attempt wins.
+				if (existsSync(path)) {
+					return null;
+				}
+				continue;
 			}
 			removePrivateFile(path);
 		}

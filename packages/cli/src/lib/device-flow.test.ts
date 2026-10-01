@@ -1,4 +1,4 @@
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { sandbox } from "../test/helpers.js";
@@ -7,6 +7,8 @@ import {
 	AGX_SCOPE_STRING,
 	DEVICE_GRANT_TYPE,
 	type DeviceFlowDeps,
+	inspectLock,
+	lockHorizonMs,
 	type PendingLogin,
 	pollDeviceToken,
 	requestDeviceCode,
@@ -15,6 +17,8 @@ import {
 	tryAcquireLock,
 } from "./device-flow.js";
 import { AgxCliError, EXIT } from "./errors.js";
+import { fileMode } from "./paths.js";
+import { setRuntimeForTests } from "./runtime.js";
 
 const BASE = "https://app.ellaworks.ai";
 const T0 = Date.parse("2026-09-30T18:00:00.000Z");
@@ -425,24 +429,121 @@ describe("the poll lock", () => {
 	});
 	afterEach(() => box.restore());
 
+	const lockFile = () => join(box.home, "profiles", "default", "pending-login.lock");
+	/** Write a lock as some other process would have left it. */
+	function plant(record: Record<string, unknown>): string {
+		const path = lockFile();
+		tryAcquireLock(path)?.release(); // creates the directory
+		writeFileSync(path, JSON.stringify(record));
+		return path;
+	}
+
 	it("is exclusive while held, and free after release", () => {
-		const path = join(box.home, "profiles", "default", "pending-login.lock");
-		const release = tryAcquireLock(path);
-		expect(release).toBeTypeOf("function");
+		const path = lockFile();
+		const lock = tryAcquireLock(path);
+		expect(lock).not.toBeNull();
 		expect(tryAcquireLock(path)).toBeNull();
-		release?.();
+		expect(inspectLock(path)).toMatchObject({ pid: process.pid, stale: false });
+		lock?.release();
 		expect(existsSync(path)).toBe(false);
 		const again = tryAcquireLock(path);
-		expect(again).toBeTypeOf("function");
-		again?.();
+		expect(again).not.toBeNull();
+		again?.release();
 	});
 
 	it("takes over a lock left by a process that no longer exists", () => {
-		const path = join(box.home, "profiles", "default", "pending-login.lock");
-		tryAcquireLock(path); // creates the directory
-		writeFileSync(path, JSON.stringify({ pid: 2 ** 22 + 12345, at: "2026-01-01T00:00:00Z" }));
-		const release = tryAcquireLock(path);
-		expect(release).toBeTypeOf("function");
-		release?.();
+		const path = plant({ pid: 2 ** 22 + 12345, at: new Date().toISOString() });
+		expect(inspectLock(path)).toMatchObject({ stale: true, reason: "dead-pid" });
+		const lock = tryAcquireLock(path);
+		expect(lock).not.toBeNull();
+		lock?.release();
+	});
+
+	it("takes over a lock naming THIS process that this process does not hold (pid reuse, containers)", () => {
+		const path = plant({ pid: process.pid });
+		expect(inspectLock(path)).toMatchObject({ stale: true, reason: "own-pid" });
+		const lock = tryAcquireLock(path);
+		expect(lock).not.toBeNull();
+		lock?.release();
+	});
+
+	it("a live process (pid 1) keeps the lock only while its heartbeat is fresh", () => {
+		const now = Date.parse("2026-09-30T18:00:00.000Z");
+		const restore = setRuntimeForTests({ now: () => now });
+		try {
+			const fresh = plant({
+				pid: 1,
+				at: new Date(now - 10_000).toISOString(),
+				staleAfter: new Date(now + 60_000).toISOString(),
+			});
+			expect(inspectLock(fresh)).toMatchObject({ pid: 1, stale: false });
+			expect(tryAcquireLock(fresh)).toBeNull();
+
+			const old = plant({
+				pid: 1,
+				at: new Date(now - 120_000).toISOString(),
+				staleAfter: new Date(now - 1).toISOString(),
+			});
+			expect(inspectLock(old)).toMatchObject({ stale: true, reason: "heartbeat" });
+			const lock = tryAcquireLock(old);
+			expect(lock).not.toBeNull();
+			lock?.release();
+
+			// No staleAfter: the default horizon (75 s) from the heartbeat.
+			const legacy = plant({ pid: 1, at: new Date(now - 76_000).toISOString() });
+			expect(inspectLock(legacy)?.stale).toBe(true);
+			// A staleAfter far in the future is capped at 10 minutes.
+			const greedy = plant({
+				pid: 1,
+				at: new Date(now - 11 * 60_000).toISOString(),
+				staleAfter: new Date(now + 86_400_000).toISOString(),
+			});
+			expect(inspectLock(greedy)?.stale).toBe(true);
+		} finally {
+			restore();
+		}
+	});
+
+	it("a lock with no heartbeat at all is judged by the file's age", () => {
+		const path = plant({ pid: 1 });
+		expect(inspectLock(path)?.stale).toBe(false);
+		const past = (Date.now() - 120_000) / 1000;
+		utimesSync(path, past, past);
+		expect(inspectLock(path)).toMatchObject({ stale: true, reason: "heartbeat" });
+	});
+
+	it("heartbeat refreshes at/staleAfter; after a takeover it writes nothing, and release leaves the new holder's lock", () => {
+		let now = Date.parse("2026-09-30T18:00:00.000Z");
+		const restore = setRuntimeForTests({ now: () => now });
+		try {
+			const path = lockFile();
+			const lock = tryAcquireLock(path);
+			expect(lock).not.toBeNull();
+			const first = JSON.parse(readFileSync(path, "utf8"));
+			expect(Date.parse(first.staleAfter) - Date.parse(first.at)).toBe(lockHorizonMs(0));
+			now += 40_000;
+			expect(lock?.heartbeat(50_000)).toBe(true);
+			const second = JSON.parse(readFileSync(path, "utf8"));
+			expect(second.token).toBe(first.token);
+			expect(Date.parse(second.at)).toBe(now);
+			expect(Date.parse(second.staleAfter)).toBe(now + 115_000);
+			expect(fileMode(path)).toBe(0o600);
+
+			// Another process takes it over (as if ours had gone stale).
+			writeFileSync(path, JSON.stringify({ pid: 1, token: "theirs", at: new Date(now).toISOString() }));
+			expect(lock?.heartbeat(5_000)).toBe(false);
+			expect(JSON.parse(readFileSync(path, "utf8")).token).toBe("theirs");
+			lock?.release();
+			expect(existsSync(path)).toBe(true);
+		} finally {
+			restore();
+		}
+	});
+
+	it("pollDeviceToken heartbeats before every wait, covering the wait and one request", async () => {
+		const h = harness([oauth("authorization_pending"), oauth("slow_down", { interval: 10 }), success()]);
+		const gaps: number[] = [];
+		await pollDeviceToken(BASE, pending(), { heartbeat: (gap) => gaps.push(gap) }, h.deps);
+		expect(gaps).toEqual([5000 + 15_000, 5000 + 15_000, 10_000 + 15_000]);
 	});
 });

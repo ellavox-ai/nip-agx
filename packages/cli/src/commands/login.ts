@@ -20,6 +20,8 @@ import {
 import {
 	AGX_CLIENT_ID,
 	AGX_SCOPE_STRING,
+	inspectLock,
+	type LockInfo,
 	type LoginRequest,
 	loadPendingLogin,
 	type PendingLogin,
@@ -192,6 +194,9 @@ function pendingStillThere(profileName: string, pending: PendingLogin): boolean 
 	return loadPendingLogin(profileName)?.deviceCode === pending.deviceCode;
 }
 
+/** Signals that stop a waiting login cleanly instead of killing it mid-poll. */
+const STOP_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+
 /** How long a `--no-wait` run waits for another process's poll to finish. */
 const NO_WAIT_LOCK_PATIENCE_MS = 20_000;
 const LOCK_RETRY_MS = 1_000;
@@ -207,14 +212,18 @@ async function pollWithLock(
 	pending: PendingLogin,
 	once: boolean,
 	signal: AbortSignal,
-): Promise<PollOutcome | { kind: "finished"; entry: CredentialEntry }> {
+): Promise<
+	| PollOutcome
+	| { kind: "finished"; entry: CredentialEntry }
+	| { kind: "locked"; pending: PendingLogin; lockPath: string; lock: LockInfo | null }
+> {
 	const rt = runtime();
 	const lockPath = pendingLoginLockPath(profileName);
-	let release = tryAcquireLock(lockPath);
+	let lock = tryAcquireLock(lockPath);
 	const patienceUntil =
 		rt.now() + pending.interval * 1000 + NO_WAIT_LOCK_PATIENCE_MS;
 	let waited = false;
-	while (!release) {
+	while (!lock) {
 		waited = true;
 		const done = finishedElsewhere(profileName, base, pending);
 		if (done) {
@@ -233,15 +242,17 @@ async function pollWithLock(
 			);
 		}
 		if (once && rt.now() >= patienceUntil) {
-			return { kind: "pending", pending };
+			// Another process holds the lock and has not finished: say who.
+			return { kind: "locked", pending, lockPath, lock: inspectLock(lockPath) };
 		}
 		try {
 			await rt.sleep(LOCK_RETRY_MS, signal);
 		} catch {
 			throw interruptedError();
 		}
-		release = tryAcquireLock(lockPath);
+		lock = tryAcquireLock(lockPath);
 	}
+	const held = lock;
 	try {
 		const done = finishedElsewhere(profileName, base, pending);
 		if (done) {
@@ -266,12 +277,23 @@ async function pollWithLock(
 				once,
 				persist: (next) => savePendingLogin(profileName, next),
 				recover: () => finishedElsewhere(profileName, base, fresh) !== null,
+				heartbeat: (nextGapMs) => {
+					held.heartbeat(nextGapMs);
+				},
 			},
 			{ signal },
 		);
 	} finally {
-		release();
+		held.release();
 	}
+}
+
+/** Stderr, `--json` or not (the exit-7 JSON carries no remediation): which
+ * process holds the lock, and the file, so a person can clear a dead one. */
+function noticeLockHolder(lockPath: string, lock: LockInfo | null): void {
+	notice(
+		`Another agx process${lock?.pid ? ` (pid ${lock.pid})` : ""} is polling this login code and holds ${lockPath}${lock?.at ? ` (last heartbeat ${lock.at})` : ""}. If no other \`agx login\` is running, that lock is abandoned and clears itself within a few minutes (\`agx doctor\` reports it, and \`agx doctor --fix-perms\` removes it once it is stale); a person can also delete the file.`,
+	);
 }
 
 function interruptedError(): AgxCliError {
@@ -545,10 +567,15 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
 		}
 	}
 
-	// 6. Poll: once for a resumed --no-wait, until done otherwise.
+	// 6. Poll: once for a resumed --no-wait, until done otherwise. Ctrl-C, a
+	// SIGTERM (a harness or container stopping us) and a SIGHUP (the terminal
+	// closing) all end the poll the same way: the code is kept, the lock is
+	// released in `finally`, and the exit is 130.
 	const controller = new AbortController();
-	const onSigint = () => controller.abort();
-	process.once("SIGINT", onSigint);
+	const onSignal = () => controller.abort();
+	for (const name of STOP_SIGNALS) {
+		process.once(name, onSignal);
+	}
 	let outcome: Awaited<ReturnType<typeof pollWithLock>>;
 	try {
 		outcome = await pollWithLock(
@@ -569,10 +596,16 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
 		}
 		throw error;
 	} finally {
-		process.off("SIGINT", onSigint);
+		for (const name of STOP_SIGNALS) {
+			process.off(name, onSignal);
+		}
 	}
 
 	const requestedOrg = requestedOrgOf(options);
+	if (outcome.kind === "locked") {
+		noticeLockHolder(outcome.lockPath, outcome.lock);
+		throw stillPendingError(loginActionRequired(outcome.pending, rt.now()));
+	}
 	if (outcome.kind === "pending") {
 		throw stillPendingError(loginActionRequired(outcome.pending, rt.now()));
 	}

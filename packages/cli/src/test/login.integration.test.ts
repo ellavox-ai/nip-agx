@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setRpcTimeoutForTests } from "../lib/api.js";
@@ -43,6 +43,8 @@ const credentialsFile = () => join(box.home, "credentials.json");
 const configFile = () => join(box.home, "config.json");
 const pendingFile = (profile = "default") =>
 	join(box.home, "profiles", profile, "pending-login.json");
+const lockFile = (profile = "default") =>
+	join(box.home, "profiles", profile, "pending-login.lock");
 
 function readJson(path: string): Record<string, any> {
 	return JSON.parse(readFileSync(path, "utf8"));
@@ -662,6 +664,88 @@ describe("agx login, more", () => {
 		expect(run.stderr).toContain(`${mock.origin}/auth/device?code=WDJB-MJHT`);
 		expect(run.stderr).toContain("code WDJB-MJHT");
 		expect(run.stdout).not.toContain("WDJB-MJHT");
+	});
+
+	it("a lock left with this process's own pid (an earlier crash, pid reuse) does not block polling", async () => {
+		expect((await agx("login", "--json", "--no-wait", "--api-base-url", mock.origin)).code).toBe(7);
+		writeFileSync(lockFile(), JSON.stringify({ pid: process.pid }));
+		mock.approve();
+		const run = await agx("login", "--json", "--no-wait", "--api-base-url", mock.origin);
+		expect(run.code, run.stderr).toBe(0);
+		expect(mock.calls("/api/auth/device/token")).toHaveLength(1);
+		expect(existsSync(lockFile())).toBe(false);
+	});
+
+	it("a live holder (pid 1) keeps the lock only while its heartbeat is fresh; exit 7 names the file", async () => {
+		expect((await agx("login", "--json", "--no-wait", "--api-base-url", mock.origin)).code).toBe(7);
+		writeFileSync(
+			lockFile(),
+			JSON.stringify({
+				pid: 1,
+				token: "t",
+				at: new Date(clock.now()).toISOString(),
+				staleAfter: new Date(clock.now() + 75_000).toISOString(),
+			}),
+		);
+		mock.approve();
+		const blocked = await agx("login", "--json", "--no-wait", "--api-base-url", mock.origin);
+		expect(blocked.code).toBe(7);
+		expect(onlyJson(blocked).actionRequired.reason).toBe("LOGIN_APPROVAL_REQUIRED");
+		expect(blocked.stderr).toContain(lockFile());
+		expect(blocked.stderr).toMatch(/pid 1/);
+		expect(mock.calls("/api/auth/device/token")).toHaveLength(0);
+
+		// The holder writes no more heartbeats: once they run out, the lock is taken over.
+		clock.advance(120_000);
+		const done = await agx("login", "--json", "--no-wait", "--api-base-url", mock.origin);
+		expect(done.code, done.stderr).toBe(0);
+		expect(mock.calls("/api/auth/device/token")).toHaveLength(1);
+		expect(existsSync(lockFile())).toBe(false);
+	});
+
+	it("a blocking login keeps its heartbeat fresh on every poll", async () => {
+		const seen: Array<{ pid: number; at: number; staleAfter: number; now: number }> = [];
+		mock.onTokenPoll = (_code, n) => {
+			const lock = readJson(lockFile());
+			seen.push({ pid: lock.pid, at: Date.parse(lock.at), staleAfter: Date.parse(lock.staleAfter), now: clock.now() });
+			if (n === 4) {
+				mock.approve();
+			}
+		};
+		const run = await agx("login", "--json", "--api-base-url", mock.origin);
+		expect(run.code, run.stderr).toBe(0);
+		expect(seen).toHaveLength(4);
+		for (const s of seen) {
+			expect(s.pid).toBe(process.pid);
+			// Written just before this poll's wait, and good for well past it.
+			expect(s.now - s.at).toBeLessThanOrEqual(5_000);
+			expect(s.staleAfter).toBeGreaterThan(s.now + 30_000);
+		}
+		expect(existsSync(lockFile())).toBe(false);
+	});
+
+	it.each(["SIGTERM", "SIGHUP"] as const)("%s while waiting releases the lock, keeps the code and exits 130", async (signal) => {
+		const others = process.listeners(signal);
+		process.removeAllListeners(signal);
+		try {
+			mock.onTokenPoll = (_code, n) => {
+				if (n === 2) {
+					expect(existsSync(lockFile())).toBe(true);
+					process.emit(signal, signal);
+				}
+			};
+			const run = await agx("login", "--json", "--api-base-url", mock.origin);
+			expect(run.code).toBe(130);
+			expect(existsSync(pendingFile())).toBe(true);
+			expect(existsSync(lockFile())).toBe(false);
+			for (const name of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+				expect(process.listeners(name).filter((l) => !others.includes(l as never))).toHaveLength(0);
+			}
+		} finally {
+			for (const listener of others) {
+				process.on(signal, listener as () => void);
+			}
+		}
 	});
 
 	it("SIGINT while waiting keeps the pending code and exits 130", async () => {
