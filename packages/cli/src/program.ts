@@ -363,6 +363,15 @@ export function buildProgram(): Command {
 				"set visibility before publishing",
 			).choices(["private", "unlisted", "public"]),
 		)
+		.option(
+			"--wait",
+			"if an org admin must confirm in the browser, wait until it is public (checks every 15 s)",
+		)
+		.option(
+			"--timeout <duration>",
+			"--wait: give up after this long",
+			"30m",
+		)
 		.action((id, options) => listingPublishCommand(id, withGlobals(options)));
 	listing
 		.command("set-visibility <level> [listingId]")
@@ -399,7 +408,10 @@ export function buildProgram(): Command {
 		.description("claim and verify NIP-05 domains");
 	domain
 		.command("add <domain>")
-		.description("claim a domain for this organization")
+		.description(
+			"claim a domain for this organization and print the nostr.json it must serve",
+		)
+		.option("--handle <name>", "the NIP-05 name the printed nostr.json maps")
 		.option("--org <slug>")
 		.action((d, options) => domainAddCommand(d, withGlobals(options)));
 	domain
@@ -410,6 +422,12 @@ export function buildProgram(): Command {
 	domain
 		.command("verify <domainId>")
 		.description("run NIP-05 verification for a domain")
+		.option("--wait", "keep checking every 15 s until it verifies")
+		.option(
+			"--timeout <duration>",
+			"--wait: give up after this long",
+			"10m",
+		)
 		.option("--org <slug>")
 		.action((id, options) => domainVerifyCommand(id, withGlobals(options)));
 	domain
