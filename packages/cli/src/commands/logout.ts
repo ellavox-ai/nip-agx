@@ -22,9 +22,11 @@ import { isWellFormedApiKey } from "../lib/secrets.js";
  *
  * A key is revoked against the origin it was issued for, never the current
  * `apiBaseUrl`, through the self-revoke `prm.apiKeys.delete` (spec §1.6). A key
- * the server refuses as invalid or expired (401) is simply forgotten. Any
- * other failure — the server unreachable, or a 404 because it has no
- * self-revoke — keeps the key, so it can still be revoked, unless `--local`.
+ * the server refuses as invalid or expired (401 `API_KEY_INVALID` or
+ * `API_KEY_EXPIRED`, or an older server's exact "Invalid API key", see
+ * {@link isKeyRejected}) is simply forgotten. Any other failure — the server
+ * unreachable, a 404 because it has no self-revoke, any other 401 — keeps the
+ * key, so it can still be revoked, unless `--local`.
  */
 
 export interface LogoutOptions {
@@ -36,7 +38,8 @@ export interface LogoutOptions {
 export type LogoutReason =
 	/** Revoked on the server, then forgotten. */
 	| "revoked"
-	/** The server refused the key as invalid or expired (401); forgotten. */
+	/** The server refused the key as invalid or expired
+	 * ({@link isKeyRejected}); forgotten. */
 	| "already-invalid"
 	/** `--local`: the server could not revoke it; forgotten anyway. */
 	| "not-revoked-local"

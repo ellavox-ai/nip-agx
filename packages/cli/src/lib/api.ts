@@ -483,6 +483,10 @@ function debugText(message: string): string {
 		.slice(0, 300);
 }
 
+/** What a server that predates `data.code` says, verbatim, for a key it does
+ * not know (spec §1.7 keeps the message for `API_KEY_INVALID`). */
+const LEGACY_INVALID_KEY_MESSAGE = "Invalid API key";
+
 /**
  * Did the server refuse the KEY itself — unknown, revoked, deleted or expired?
  * Only then may agx forget a key without revoking it.
@@ -490,8 +494,13 @@ function debugText(message: string): string {
  * A 404 is never that: an API-key caller whose key the server does not know
  * gets 401 `API_KEY_INVALID` (spec §1.6, §1.7), so a 404 means the procedure
  * is missing (a server without it, a proxy, a wrong path) and the key may
- * well still work. A disabled key still exists and can be re-enabled, and a
- * 0.3 server's "missing organization scope" 401 names a key that exists too.
+ * well still work. A disabled key still exists and can be re-enabled.
+ *
+ * A 401 WITHOUT a `data.code` counts only when its message is exactly the
+ * 0.3 server's "Invalid API key". Any other 401 — a 0.3 server's "missing
+ * organization scope", a proxy's or gateway's auth wall, a reworded message —
+ * proves nothing about the key, which may still work: agx keeps it (logout
+ * exits 4) or says it could not revoke it (login --force).
  */
 export function isKeyRejected(error: unknown): boolean {
 	if (error instanceof AgxCliError) {
@@ -505,7 +514,7 @@ export function isKeyRejected(error: unknown): boolean {
 	if (err?.status !== 401 && err?.code !== "UNAUTHORIZED") {
 		return false;
 	}
-	return !/organization scope/i.test(err?.message ?? "");
+	return err?.message === LEGACY_INVALID_KEY_MESSAGE;
 }
 
 /**

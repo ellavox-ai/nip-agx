@@ -135,10 +135,12 @@ logout` revokes a `manual` key too; a key from agx 0.3 is only forgotten, and
 has to be revoked in Settings.
 
 `agx logout` forgets a key without revoking it only when the server refuses it
-as invalid or expired. If the server cannot be reached (exit 5) or cannot
-revoke it (for example a 404 from a server without self-revoke, exit 6), the
-key is **kept** and the error says so; revoke it in Settings, then
-`agx logout --local` forgets it on this machine.
+as invalid or expired (`API_KEY_INVALID` or `API_KEY_EXPIRED`, or an older
+server's 401 with exactly the message "Invalid API key"). If the server cannot
+be reached (exit 5) or cannot revoke it (for example a 404 from a server without
+self-revoke, exit 6, or any other 401, exit 4), the key is **kept** and the
+error says so; revoke it in Settings, then `agx logout --local` forgets it on
+this machine.
 
 ---
 

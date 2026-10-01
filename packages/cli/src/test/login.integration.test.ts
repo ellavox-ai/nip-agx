@@ -50,6 +50,14 @@ function readJson(path: string): Record<string, any> {
 	return JSON.parse(readFileSync(path, "utf8"));
 }
 
+/** A 401 from a server that predates `data.code`: no code, just a message. */
+function unauthorizedWithoutCode(message: string) {
+	return {
+		status: 401,
+		body: { json: { defined: false, code: "UNAUTHORIZED", status: 401, message } },
+	};
+}
+
 function onlyJson(run: CliRun): Record<string, any> {
 	const docs = jsonDocuments(run.stdout);
 	expect(docs, `stdout was:\n${run.stdout}\nstderr:\n${run.stderr}`).toHaveLength(1);
@@ -434,6 +442,47 @@ describe("agx login", () => {
 		expect(readJson(credentialsFile()).profiles.default).toBeDefined();
 	});
 
+	it("(g) a 401 without a data.code is 'already invalid' only as the 0.3 server's exact \"Invalid API key\"", async () => {
+		expect((await loginViaNoWait()).code).toBe(0);
+		mock.setRpc("prm/apiKeys/delete", () => unauthorizedWithoutCode("Invalid API key"));
+		const run = await agx("logout", "--json");
+		expect(run.code, run.stderr).toBe(0);
+		expect(onlyJson(run).loggedOut[0]).toEqual({ profile: "default", revoked: false, reason: "already-invalid" });
+		expect(readJson(credentialsFile()).profiles.default).toBeUndefined();
+	});
+
+	it.each(["Unauthorized", "API key is missing organization scope", "Invalid API key (gateway)"])(
+		"(g) any other 401 without a data.code (%s) keeps the key and exits 4: it may still work",
+		async (message) => {
+			expect((await loginViaNoWait()).code).toBe(0);
+			const key = mock.keys[0];
+			mock.setRpc("prm/apiKeys/delete", () => unauthorizedWithoutCode(message));
+			const run = await agx("logout", "--json");
+			expect(run.code).toBe(4);
+			expect(onlyJson(run).loggedOut[0]).toEqual({ profile: "default", revoked: false, reason: "revoke-failed" });
+			expect(run.stderr).toMatch(/kept/);
+			expect(run.stderr).toMatch(/agx logout --local/);
+			expect(readJson(credentialsFile()).profiles.default.apiKey).toBe(key?.key);
+		},
+	);
+
+	it("(g) a manual key whose whoami gets a 401 without a data.code is kept too", async () => {
+		const manual = mock.addKey();
+		process.env.AGX_API_URL = mock.origin;
+		const { setStdinForTests } = await import("../lib/stdin.js");
+		const restore = setStdinForTests(manual.key);
+		try {
+			expect((await agx("config", "set", "apiKey", "--stdin")).code).toBe(0);
+		} finally {
+			restore();
+		}
+		mock.setRpc("account/principal/get", () => unauthorizedWithoutCode("Unauthorized"));
+		const run = await agx("logout", "--json");
+		expect(run.code).toBe(4);
+		expect(onlyJson(run).loggedOut[0]).toMatchObject({ reason: "revoke-failed" });
+		expect(readJson(credentialsFile()).profiles.default.apiKey).toBe(manual.key);
+	});
+
 	it("(g) a disabled key still exists: it is kept, not forgotten as invalid", async () => {
 		expect((await loginViaNoWait()).code).toBe(0);
 		mock.setRpc("prm/apiKeys/delete", () => structuredClone(CONTRACT.rpcErrors.API_KEY_DISABLED as never));
@@ -643,6 +692,19 @@ describe("agx login, more", () => {
 		const invalid = await loginViaNoWait("--force");
 		expect(invalid.code, invalid.stderr).toBe(0);
 		expect(invalid.stderr).not.toMatch(/Could not revoke/);
+	});
+
+	it("--force: a 401 without a data.code leaves the old key alive and says so, unless it is the 0.3 \"Invalid API key\"", async () => {
+		expect((await loginViaNoWait()).code).toBe(0);
+		mock.setRpc("prm/apiKeys/delete", () => unauthorizedWithoutCode("Unauthorized"));
+		const walled = await loginViaNoWait("--force");
+		expect(walled.code, walled.stderr).toBe(0);
+		expect(walled.stderr).toMatch(/Could not revoke the previous login key \(k_1\)/);
+
+		mock.setRpc("prm/apiKeys/delete", () => unauthorizedWithoutCode("Invalid API key"));
+		const legacy = await loginViaNoWait("--force");
+		expect(legacy.code, legacy.stderr).toBe(0);
+		expect(legacy.stderr).not.toMatch(/Could not revoke/);
 	});
 
 	it("human mode: the URL and code go to stderr, the result to stdout", async () => {

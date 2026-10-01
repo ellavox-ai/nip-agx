@@ -213,11 +213,28 @@ describe("isKeyRejected (may a key be forgotten unrevoked?)", () => {
 		expect(isKeyRejected(fromFixture(name))).toBe(expected);
 	});
 
-	it("a 401 without a code is (a pre-Phase-1 server's Invalid API key)", () => {
+	it("a 401 without a code is only with the 0.3 message, exactly (a pre-Phase-1 server's Invalid API key)", () => {
 		expect(isKeyRejected(new ORPCError("UNAUTHORIZED", { message: "Invalid API key" }))).toBe(true);
-		expect(
-			isKeyRejected(new ORPCError("UNAUTHORIZED", { message: "API key is missing organization scope" })),
-		).toBe(false);
+		expect(isKeyRejected(new ORPCError("SOMETHING", { status: 401, message: "Invalid API key" }))).toBe(true);
+	});
+
+	it.each([
+		["the 0.3 missing-scope 401", "API key is missing organization scope"],
+		["oRPC's default 401", undefined],
+		["a gateway's auth wall", "Unauthorized"],
+		["a reworded message", "Invalid API key."],
+		["another case", "invalid api key"],
+		["padding", " Invalid API key"],
+		["a longer message", "Invalid API key for this proxy"],
+	])("a 401 without a code is NOT (%s): the key may still work", (_label, message) => {
+		const withMessage = message === undefined ? {} : { message };
+		expect(isKeyRejected(new ORPCError("UNAUTHORIZED", withMessage))).toBe(false);
+		expect(isKeyRejected(new ORPCError("UNAUTHORIZED", { ...withMessage, data: {} }))).toBe(false);
+	});
+
+	it("the 0.3 message on anything but a 401 is not", () => {
+		expect(isKeyRejected(new ORPCError("FORBIDDEN", { message: "Invalid API key" }))).toBe(false);
+		expect(isKeyRejected(new ORPCError("TOO_MANY_REQUESTS", { message: "Invalid API key" }))).toBe(false);
 	});
 
 	it("a 404 never is: it means the procedure is missing, not the key", () => {
