@@ -7,7 +7,7 @@ import {
 	HumanActionRequiredError,
 } from "./errors.js";
 import { DEFAULT_API_BASE_URL } from "./config.js";
-import { runtime } from "./runtime.js";
+import { runtime, timeoutSignal } from "./runtime.js";
 import {
 	isWellFormedApiKey,
 	malformedApiKeyError,
@@ -49,13 +49,37 @@ export interface ApiTarget {
 	apiKey: string;
 }
 
-export function createApiClient(creds: ApiTarget): AgxApiClient {
+/**
+ * How long one API call may take, headers AND body. Without it the only bound
+ * is undici's 300 s headers timeout, and a body trickled slowly never times
+ * out at all. `verifyDomain` fetches a remote nostr.json server-side, so this
+ * is generous.
+ */
+export const RPC_TIMEOUT_MS = 30_000;
+
+let rpcTimeoutOverrideMs: number | null = null;
+
+/** Tests only: every API call times out after `ms`. Returns the restore function. */
+export function setRpcTimeoutForTests(ms: number): () => void {
+	const previous = rpcTimeoutOverrideMs;
+	rpcTimeoutOverrideMs = ms;
+	return () => {
+		rpcTimeoutOverrideMs = previous;
+	};
+}
+
+export function createApiClient(
+	creds: ApiTarget,
+	options?: { timeoutMs?: number },
+): AgxApiClient {
 	// The last check before a key goes on the wire. Every entry point checks
 	// the shape too, with a better label; this catches whatever slipped past.
 	if (!isWellFormedApiKey(creds.apiKey)) {
 		throw malformedApiKeyError("The API key for this command");
 	}
 	rememberSecret(creds.apiKey);
+	const timeoutMs =
+		rpcTimeoutOverrideMs ?? options?.timeoutMs ?? RPC_TIMEOUT_MS;
 	const link = new RPCLink({
 		url: `${creds.baseUrl}/api/rpc`,
 		headers: async () => ({
@@ -71,6 +95,8 @@ export function createApiClient(creds: ApiTarget): AgxApiClient {
 			const response = await runtime().fetch(request, {
 				...init,
 				redirect: "manual",
+				// Bounds the body read too: the response stream is aborted with it.
+				signal: timeoutSignal(timeoutMs, request.signal),
 			});
 			if (response.status >= 300 && response.status < 400) {
 				throw redirectRefused(response.status);
@@ -390,9 +416,21 @@ function fromTransportError(
 		message?: unknown;
 		code?: unknown;
 		cause?: { name?: unknown; code?: unknown } | null;
-	};
+	} | null;
 	const message = typeof err?.message === "string" ? err.message : "";
 	const code = token(err?.code) ?? token(err?.cause?.code);
+
+	// The call's own deadline (createApiClient): on the request, or while
+	// reading the body, where oRPC wraps it as "Cannot parse response body".
+	const names = [token(err?.name), token(err?.cause?.name)];
+	if (names.includes("TimeoutError") || names.includes("AbortError")) {
+		return new AgxCliError(`${context}: the API did not answer in time.`, {
+			exitCode: EXIT.network,
+			remediation: isLocal(baseUrl)
+				? `Check the agent index at ${baseUrl} is running and responsive, then re-run the command.`
+				: "Check the API is up and reachable, then re-run the command:\n    agx doctor",
+		});
+	}
 
 	if ((code !== null && UNREACHABLE_CODES.has(code)) || message === "fetch failed") {
 		return new AgxCliError(

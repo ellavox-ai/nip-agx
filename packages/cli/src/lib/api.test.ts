@@ -1,8 +1,17 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { ORPCError } from "@orpc/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { sandbox } from "../test/helpers.js";
 import { CONTRACT, type MockIndexServer, startMockIndexServer } from "../test/mock-index-server.js";
-import { createApiClient, isKeyRejected, resolveActionUrl, toCliError, userAgent } from "./api.js";
+import {
+	createApiClient,
+	isKeyRejected,
+	resolveActionUrl,
+	setRpcTimeoutForTests,
+	toCliError,
+	userAgent,
+} from "./api.js";
 import { AgxCliError, EXIT, HumanActionRequiredError } from "./errors.js";
 
 const BASE = "https://app.ellaworks.ai";
@@ -299,6 +308,49 @@ describe("createApiClient", () => {
 		} finally {
 			await elsewhere.close();
 		}
+	});
+
+	it("times out a call whose answer never comes (exit 5)", async () => {
+		const key = mock.addKey();
+		mock.setRpc("organizations/list", () => new Promise(() => {}));
+		const restore = setRpcTimeoutForTests(200);
+		const started = Date.now();
+		try {
+			const error = await createApiClient({ baseUrl: mock.origin, apiKey: key.key })
+				.organizations.list({})
+				.catch((e: unknown) => e);
+			const mapped = toCliError(error, "organizations.list", mock.origin);
+			expect(mapped.exitCode).toBe(EXIT.network);
+			expect(mapped.message).toBe("organizations.list: the API did not answer in time.");
+		} finally {
+			restore();
+		}
+		expect(Date.now() - started).toBeLessThan(5_000);
+	});
+
+	it("times out a body that is trickled forever (exit 5)", async () => {
+		const key = mock.addKey();
+		const trickle = createServer((_req, res) => {
+			res.writeHead(200, { "Content-Type": "application/json" });
+			res.write('{"json":');
+			const timer = setInterval(() => res.write(" "), 20);
+			res.on("close", () => clearInterval(timer));
+		});
+		await new Promise<void>((resolve) => trickle.listen(0, "127.0.0.1", resolve));
+		const origin = `http://127.0.0.1:${(trickle.address() as AddressInfo).port}`;
+		const restore = setRpcTimeoutForTests(300);
+		const started = Date.now();
+		try {
+			const error = await createApiClient({ baseUrl: origin, apiKey: key.key })
+				.organizations.list({})
+				.catch((e: unknown) => e);
+			expect(toCliError(error, "organizations.list", origin).exitCode).toBe(EXIT.network);
+		} finally {
+			restore();
+			trickle.closeAllConnections();
+			await new Promise<void>((resolve) => trickle.close(() => resolve()));
+		}
+		expect(Date.now() - started).toBeLessThan(5_000);
 	});
 
 	it("decodes a §1.7 wire error into data.code", async () => {

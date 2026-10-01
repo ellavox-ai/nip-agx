@@ -373,6 +373,10 @@ async function currentPrincipal(
 	}
 }
 
+/** The replaced key's revoke is best effort, so it gets a shorter leash than a
+ * normal call: it only ever delays the exit (the result is already printed). */
+const REVOKE_TIMEOUT_MS = 10_000;
+
 /**
  * Best effort: revoke the login key this one replaces, against the origin it
  * was issued for. A key that is already gone, or a server that cannot be
@@ -384,7 +388,10 @@ async function revokeReplacedKey(old: CredentialEntry): Promise<void> {
 		return;
 	}
 	try {
-		const client = createApiClient({ baseUrl: origin, apiKey: old.apiKey });
+		const client = createApiClient(
+			{ baseUrl: origin, apiKey: old.apiKey },
+			{ timeoutMs: REVOKE_TIMEOUT_MS },
+		);
 		await client.prm.apiKeys.delete({ apiKeyId: old.apiKeyId });
 	} catch (error) {
 		if (isKeyRejected(error)) {
@@ -624,15 +631,13 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
 			`Removed the 0.3 API key from config.json for profile "${profileName}"; this login replaces it. It was not revoked: revoke it in Settings → API keys if nothing else uses it.`,
 		);
 	}
-	if (previous && previous.apiKey !== entry.apiKey) {
-		if (previous.source === "login") {
-			await revokeReplacedKey(previous);
-		} else {
-			// A Settings key may still be in use elsewhere (CI): never revoke it.
-			notice(
-				`This login replaces the ${previous.source} API key of profile "${profileName}". That key was not revoked: revoke it in Settings → API keys if nothing else uses it.`,
-			);
-		}
+	const replaced =
+		previous && previous.apiKey !== entry.apiKey ? previous : null;
+	if (replaced && replaced.source !== "login") {
+		// A Settings key may still be in use elsewhere (CI): never revoke it.
+		notice(
+			`This login replaces the ${replaced.source} API key of profile "${profileName}". That key was not revoked: revoke it in Settings → API keys if nothing else uses it.`,
+		);
 	}
 	const differs =
 		requestedOrg !== null && token.organization.slug !== requestedOrg;
@@ -641,10 +646,16 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
 			`You asked for organization "${requestedOrg}", but the login was approved for "${token.organization.slug}". agx now acts on "${token.organization.slug}".`,
 		);
 	}
+	// The result goes out BEFORE the best-effort revoke of the replaced key:
+	// the new key is already stored, so a slow or dead server can only delay
+	// the exit, never cost a harness the result.
 	report(
 		resultFromEntry(profileName, base, entry, {
 			alreadyLoggedIn: false,
 			requestedOrg: differs ? requestedOrg : null,
 		}),
 	);
+	if (replaced && replaced.source === "login") {
+		await revokeReplacedKey(replaced);
+	}
 }

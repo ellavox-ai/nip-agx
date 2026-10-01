@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { setRpcTimeoutForTests } from "../lib/api.js";
 import { fileMode } from "../lib/paths.js";
 import {
 	agx,
@@ -287,6 +288,19 @@ describe("agx login", () => {
 		const call = mock.calls("/api/rpc/account/principal/get").at(-1);
 		expect(call?.headers["x-api-key"]).toBe(key?.key);
 		expect(String(call?.headers["user-agent"])).toMatch(/^agx\/\d+\.\d+\.\d+ \(node /);
+	});
+
+	it("(e) whoami against a server that never answers exits 5 instead of hanging", async () => {
+		expect((await loginViaNoWait()).code).toBe(0);
+		mock.setRpc("account/principal/get", () => new Promise(() => {}));
+		const restore = setRpcTimeoutForTests(200);
+		try {
+			const run = await agx("whoami", "--json");
+			expect(run.code).toBe(5);
+			expect(run.stderr).toMatch(/did not answer in time/);
+		} finally {
+			restore();
+		}
 	});
 
 	it("(e) whoami falls back to the local record on a server without the endpoint", async () => {
@@ -589,6 +603,28 @@ describe("agx login, more", () => {
 		expect(mock.keys).toHaveLength(2);
 		expect(old?.revoked).toBe(true);
 		expect(readJson(credentialsFile()).profiles.default.apiKeyId).toBe(mock.keys[1]?.id);
+	});
+
+	it("--force prints the result before revoking the old key, and a revoke that hangs is bounded", async () => {
+		expect((await loginViaNoWait()).code).toBe(0);
+		let stdoutWhenRevokeArrived = "";
+		mock.setRpc("prm/apiKeys/delete", () => {
+			// console.log is the capture spy while agx runs: what has it printed?
+			const calls = (console.log as unknown as { mock?: { calls: unknown[][] } }).mock?.calls ?? [];
+			stdoutWhenRevokeArrived = calls.flat().map(String).join("\n");
+			return new Promise(() => {});
+		});
+		const restore = setRpcTimeoutForTests(200);
+		try {
+			const run = await loginViaNoWait("--force");
+			expect(run.code, run.stderr).toBe(0);
+			expect(onlyJson(run)).toMatchObject({ loggedIn: true, apiKeyId: mock.keys[1]?.id });
+			expect(stdoutWhenRevokeArrived).toMatch(/"loggedIn": true/);
+			expect(run.stderr).toMatch(/Could not revoke the previous login key/);
+			expect(readJson(credentialsFile()).profiles.default.apiKeyId).toBe(mock.keys[1]?.id);
+		} finally {
+			restore();
+		}
 	});
 
 	it("--force says so when the old key could not be revoked (404), and stays quiet when it was already invalid", async () => {
