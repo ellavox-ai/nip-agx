@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getCredential } from "../lib/credentials.js";
 import { setStdinForTests } from "../lib/stdin.js";
-import { agx, jsonDocuments, sandbox } from "../test/helpers.js";
+import { agx, capture, jsonDocuments, sandbox } from "../test/helpers.js";
+import { startMockIndexServer } from "../test/mock-index-server.js";
 
 const KEY = "ela_ManualKeyManualKeyManualKeyManualKeyWXYZ";
 
@@ -128,6 +129,66 @@ describe("migration of a 0.3 key", () => {
 			source: "migrated",
 			apiBaseUrl: "http://localhost:3000",
 		});
+	});
+
+	it("config set apiBaseUrl binds the key to the server it was used with, not the new one", async () => {
+		delete process.env.AGX_API_URL;
+		writeFileSync(
+			join(box.home, "config.json"),
+			JSON.stringify({
+				version: 1,
+				currentProfile: "default",
+				profiles: { default: { apiBaseUrl: "https://app.ellaworks.ai", apiKey: "ela_OLD", orgSlug: "acme" } },
+			}),
+		);
+		const run = await agx("config", "set", "apiBaseUrl", "http://localhost:4000", "--json");
+		expect(run.code, run.stderr).toBe(0);
+		expect(getCredential("default")).toMatchObject({
+			apiKey: "ela_OLD",
+			source: "migrated",
+			apiBaseUrl: "https://app.ellaworks.ai",
+		});
+		expect(run.stderr).toMatch(/only ever sent to https:\/\/app\.ellaworks\.ai/);
+		// And the mismatch is reported.
+		expect(run.stderr).toMatch(/belongs to https:\/\/app\.ellaworks\.ai/);
+		expect(readFileSync(join(box.home, "config.json"), "utf8")).not.toContain("ela_OLD");
+	});
+
+	it("updateProfile binds a legacy key to its stored origin even when the same write changes apiBaseUrl", async () => {
+		const { updateProfile } = await import("../lib/config.js");
+		writeFileSync(
+			join(box.home, "config.json"),
+			JSON.stringify({
+				version: 1,
+				currentProfile: "default",
+				profiles: { default: { apiBaseUrl: "https://app.ellaworks.ai", apiKey: "ela_OLD" } },
+			}),
+		);
+		await capture(async () => updateProfile("default", { apiBaseUrl: "http://localhost:4000" }));
+		expect(getCredential("default")?.apiBaseUrl).toBe("https://app.ellaworks.ai");
+	});
+
+	it("after the move, API commands refuse to send the old key to the new server", async () => {
+		delete process.env.AGX_API_URL;
+		const mock = await startMockIndexServer();
+		try {
+			const legacy = mock.addKey();
+			writeFileSync(
+				join(box.home, "config.json"),
+				JSON.stringify({
+					version: 1,
+					currentProfile: "default",
+					profiles: { default: { apiBaseUrl: "https://app.ellaworks.ai", apiKey: legacy.key, orgSlug: "acme-robotics" } },
+				}),
+			);
+			expect((await agx("config", "set", "apiBaseUrl", mock.origin)).code).toBe(0);
+			const run = await agx("listing", "list");
+			expect(run.code).toBe(3);
+			expect(run.stderr).toMatch(/Nothing was sent/);
+			expect(mock.requests).toEqual([]);
+		} finally {
+			await mock.close();
+		}
 	});
 });
 

@@ -6,6 +6,7 @@ import {
 	effectiveProfile,
 	getProfile,
 	loadConfig,
+	migrateLegacyKeysNow,
 	resolveProfileName,
 	saveConfig,
 	updateProfile,
@@ -175,6 +176,9 @@ export async function configSetCommand(
 			exitCode: EXIT.usage,
 			label: "apiBaseUrl",
 		});
+		// A 0.3 key still in config.json belongs to the server it was used
+		// with. Move it now, bound to that server, so the check below sees it.
+		migrateLegacyKeysNow();
 		const entry = getCredential(profileName);
 		if (entry && originOf(entry.apiBaseUrl) !== originOf(patch.apiBaseUrl)) {
 			notice(

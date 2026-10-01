@@ -87,16 +87,46 @@ export function loadConfig(): AgxConfig {
 }
 
 export function saveConfig(config: AgxConfig): void {
-	writePrivateJson(configPath(), migrateLegacyKeys(config));
+	writePrivateJson(configPath(), migrateLegacyKeys(config, storedConfig()));
+}
+
+/** `config.json` as it is on disk right now, or null if there is none (or it
+ * cannot be read, in which case there is nothing on disk to migrate from). */
+function storedConfig(): AgxConfig | null {
+	try {
+		return existsSync(configPath()) ? loadConfig() : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Move every 0.3 `config.json` key into `credentials.json` now, before
+ * anything else changes the profile. A caller about to change `apiBaseUrl`
+ * runs this first, so the key is bound (and any mismatch reported) against
+ * the server it was used with.
+ */
+export function migrateLegacyKeysNow(): void {
+	const config = storedConfig();
+	if (config && Object.values(config.profiles).some((p) => p.apiKey)) {
+		saveConfig(config);
+	}
 }
 
 /**
  * Move every 0.3 `config.json` key into `credentials.json` (as
- * `source: "migrated"`, bound to that profile's stored origin) before
- * `config.json` is written again. The credential is written first, so a crash
- * between the two writes leaves the key in both files, never in neither.
+ * `source: "migrated"`) before `config.json` is written again. The credential
+ * is written first, so a crash between the two writes leaves the key in both
+ * files, never in neither.
+ *
+ * The key is bound to the `apiBaseUrl` stored NEXT TO IT on disk — the server
+ * it was used with — never to one this very write is about to set: otherwise
+ * `agx config set apiBaseUrl <other>` would hand an old key to the new server.
  */
-function migrateLegacyKeys(config: AgxConfig): AgxConfig {
+function migrateLegacyKeys(
+	config: AgxConfig,
+	stored: AgxConfig | null,
+): AgxConfig {
 	for (const [name, profile] of Object.entries(config.profiles)) {
 		if (!profile.apiKey) {
 			continue;
@@ -106,7 +136,12 @@ function migrateLegacyKeys(config: AgxConfig): AgxConfig {
 				`Removed the API key of profile "${name}" from config.json: credentials.json already holds this profile's credential, which takes precedence.`,
 			);
 		} else {
-			const origin = originOf(profile.apiBaseUrl);
+			const before = stored?.profiles[name];
+			const usedWith =
+				before?.apiKey === profile.apiKey
+					? before.apiBaseUrl
+					: profile.apiBaseUrl;
+			const origin = originOf(usedWith);
 			if (!origin) {
 				// Cannot bind it to an origin; leave it where it is rather than
 				// lose it. `agx doctor` reports the bad apiBaseUrl.
