@@ -299,6 +299,21 @@ export function effectiveApiBaseUrl(profileName: string): {
 }
 
 /**
+ * The extra way out for a key that was stored by hand (`manual`) or moved out
+ * of a 0.3 `config.json` (`migrated`): such a key is bound to whatever server
+ * the profile named when it was stored, so a Settings key stored BEFORE
+ * `apiBaseUrl` was set is bound to the default server. If it really belongs to
+ * `targetOrigin`, storing it again binds it there. agx never rebinds a key on
+ * its own: that would undo the binding.
+ */
+export function rebindHint(source: CredentialSource, targetOrigin: string): string {
+	if (source === "login") {
+		return "";
+	}
+	return `\n  or, if this is a Settings key minted on ${targetOrigin}, store it again now that the profile points there:\n    printf %s "$KEY" | agx config set apiKey --stdin`;
+}
+
+/**
  * Find the API key for a profile, in precedence order:
  *
  *   1. `AGX_API_KEY` (the caller supplied both key and target; no binding);
@@ -331,7 +346,7 @@ export function resolveApiKey(profileName: string): ResolvedApiKey {
 		if (!keyOrigin || keyOrigin !== targetOrigin) {
 			throw configError(
 				`The credential of profile "${profileName}" was issued for ${keyOrigin ?? entry.apiBaseUrl}, but this command would send it to ${targetOrigin}. Nothing was sent.`,
-				`A key is only ever sent to the server that issued it. Either go back to that server:\n    agx config set apiBaseUrl ${keyOrigin ?? entry.apiBaseUrl}${process.env.AGX_API_URL ? "\n  (and unset AGX_API_URL)" : ""}\n  or log in to this one:\n    agx login --api-base-url ${targetOrigin}`,
+				`A key is only ever sent to the server that issued it. Either go back to that server:\n    agx config set apiBaseUrl ${keyOrigin ?? entry.apiBaseUrl}${process.env.AGX_API_URL ? "\n  (and unset AGX_API_URL)" : ""}\n  or log in to this one:\n    agx login --api-base-url ${targetOrigin}${rebindHint(entry.source, targetOrigin ?? baseUrl)}`,
 			);
 		}
 		if (isExpired(entry, runtime().now())) {

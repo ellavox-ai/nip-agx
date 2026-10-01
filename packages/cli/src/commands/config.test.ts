@@ -149,8 +149,9 @@ describe("migration of a 0.3 key", () => {
 			apiBaseUrl: "https://app.ellaworks.ai",
 		});
 		expect(run.stderr).toMatch(/only ever sent to https:\/\/app\.ellaworks\.ai/);
-		// And the mismatch is reported.
+		// And the mismatch is reported, with the fix for a Settings key.
 		expect(run.stderr).toMatch(/belongs to https:\/\/app\.ellaworks\.ai/);
+		expect(run.stderr).toMatch(/config set apiKey --stdin/);
 		expect(readFileSync(join(box.home, "config.json"), "utf8")).not.toContain("ela_OLD");
 	});
 
@@ -203,5 +204,58 @@ describe("agx config set apiBaseUrl", () => {
 		const run = await agx("config", "set", "apiBaseUrl", "http://localhost:3000");
 		expect(run.code).toBe(0);
 		expect(run.stderr).toMatch(/belongs to https:\/\/app\.ellaworks\.ai/);
+	});
+
+	it("a Settings key stored before apiBaseUrl: the notice and the exit 3 both name the --stdin fix, which works", async () => {
+		delete process.env.AGX_API_URL;
+		const mock = await startMockIndexServer();
+		try {
+			const settingsKey = mock.addKey();
+			// The 0.3 order: key first (bound to the default server), then the URL.
+			expect((await withStdin(settingsKey.key, () => agx("config", "set", "apiKey", "--stdin"))).code).toBe(0);
+			const setBase = await agx("config", "set", "apiBaseUrl", mock.origin);
+			expect(setBase.code).toBe(0);
+			expect(setBase.stderr).toMatch(/belongs to https:\/\/app\.ellaworks\.ai/);
+			expect(setBase.stderr).toMatch(/printf %s "\$KEY" \| agx config set apiKey --stdin/);
+			await agx("config", "set", "orgSlug", "acme-robotics");
+
+			const refused = await agx("search", "x");
+			expect(refused.code).toBe(3);
+			expect(refused.stderr).toMatch(/Nothing was sent/);
+			expect(refused.stderr).toMatch(/printf %s "\$KEY" \| agx config set apiKey --stdin/);
+			expect(mock.requests).toEqual([]);
+
+			// The fix the messages give: store the key again, now bound to the mock.
+			expect((await withStdin(settingsKey.key, () => agx("config", "set", "apiKey", "--stdin"))).code).toBe(0);
+			mock.setRpc("agentIndex/searchListings", () => ({ output: { listings: [], total: 0 } }));
+			const run = await agx("search", "x");
+			expect(run.code, run.stderr).toBe(0);
+			expect(mock.calls("/api/rpc/agentIndex/searchListings")[0]?.headers["x-api-key"]).toBe(settingsKey.key);
+		} finally {
+			await mock.close();
+		}
+	});
+
+	it("a login key's origin mismatch does not suggest storing it by hand", async () => {
+		const { setCredential } = await import("../lib/credentials.js");
+		setCredential("default", {
+			apiBaseUrl: "https://app.ellaworks.ai",
+			apiKey: KEY,
+			apiKeyId: "k_1",
+			source: "login",
+			clientId: "agx",
+			organization: { id: "o_1", slug: "acme-robotics", name: "Acme Robotics" },
+			user: null,
+			scopes: [],
+			expiresAt: "2099-01-01T00:00:00.000Z",
+			createdAt: "2026-09-30T00:00:00.000Z",
+		});
+		delete process.env.AGX_API_URL;
+		const run = await agx("config", "set", "apiBaseUrl", "http://localhost:4000");
+		expect(run.stderr).toMatch(/agx login/);
+		expect(run.stderr).not.toMatch(/--stdin/);
+		const refused = await agx("search", "x");
+		expect(refused.code).toBe(3);
+		expect(refused.stderr).not.toMatch(/--stdin/);
 	});
 });

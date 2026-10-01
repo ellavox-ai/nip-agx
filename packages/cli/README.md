@@ -121,10 +121,15 @@ Where there is no browser, mint a key in Settings → API keys and pipe it in, s
 it never appears in argv, shell history or `ps`:
 
 ```bash
+agx config set apiBaseUrl https://staging.example.com   # only for a server other than the default; FIRST
 printf %s "$AGX_KEY" | agx config set apiKey --stdin
 ```
 
-It is stored as a `manual` credential, bound to the profile's server. Passing
+It is stored as a `manual` credential, bound to the server the profile points
+at **when you store it**, so set `apiBaseUrl` before the key. A script written
+for agx 0.3 that sets the key first binds it to `https://app.ellaworks.ai`, and
+every API command then stops with exit 3; pipe the key in again after setting
+`apiBaseUrl` (agx never rebinds a key by itself). Passing
 the key as an argument still works but prints a deprecation warning. `agx
 logout` revokes a `manual` key too; a key from agx 0.3 is only forgotten, and
 has to be revoked in Settings.

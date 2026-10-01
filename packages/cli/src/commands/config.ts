@@ -7,6 +7,7 @@ import {
 	getProfile,
 	loadConfig,
 	migrateLegacyKeysNow,
+	rebindHint,
 	resolveProfileName,
 	saveConfig,
 	updateProfile,
@@ -180,9 +181,10 @@ export async function configSetCommand(
 		// with. Move it now, bound to that server, so the check below sees it.
 		migrateLegacyKeysNow();
 		const entry = getCredential(profileName);
-		if (entry && originOf(entry.apiBaseUrl) !== originOf(patch.apiBaseUrl)) {
+		const target = originOf(patch.apiBaseUrl) ?? patch.apiBaseUrl;
+		if (entry && originOf(entry.apiBaseUrl) !== target) {
 			notice(
-				`The stored credential of profile "${profileName}" belongs to ${entry.apiBaseUrl}, so API commands will refuse to send it to ${originOf(patch.apiBaseUrl)}. Log in there:  agx login`,
+				`The stored credential of profile "${profileName}" belongs to ${entry.apiBaseUrl}, so API commands will refuse to send it to ${target}. Log in there:\n    agx login${rebindHint(entry.source, target)}`,
 			);
 		}
 	}
