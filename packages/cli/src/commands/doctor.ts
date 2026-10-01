@@ -9,6 +9,7 @@ import {
 	resolveApiCredentials,
 	resolveProfileName,
 } from "../lib/config.js";
+import { loadPendingLogin } from "../lib/device-flow.js";
 import { AgxCliError, EXIT } from "../lib/errors.js";
 import { loadIdentityFile } from "../lib/identity.js";
 import { heading, json, say } from "../lib/output.js";
@@ -385,6 +386,15 @@ export async function doctorCommand(options: DoctorOptions): Promise<void> {
 				remediation: "agx login --force",
 			});
 		}
+	}
+	const pending = loadPendingLogin(profileName);
+	if (pending && Date.parse(pending.expiresAt) <= runtime().now()) {
+		checks.push({
+			name: "pending login",
+			verdict: "warn",
+			detail: `an unfinished login code expired at ${pending.expiresAt}`,
+			remediation: "agx login",
+		});
 	}
 	if (creds && apiStatus !== null) {
 		try {

@@ -39,7 +39,8 @@
 		"type-check": "tsc --noEmit",
 		"test": "vitest run",
 		"test:unit": "vitest run",
-		"test:e2e": "node scripts/e2e-claude-inbox.mjs"
+		"test:e2e": "node scripts/e2e-claude-inbox.mjs",
+		"test:e2e:login": "E2E_LOGIN=1 vitest run src/test/login.e2e.test.ts"
 	},
 	"dependencies": {
 		"@orpc/client": "1.15.0",

@@ -35,6 +35,9 @@ import {
 	listingSetPolicyCommand,
 	listingSetVisibilityCommand,
 } from "./commands/listing.js";
+import { loginCommand } from "./commands/login.js";
+import { logoutCommand } from "./commands/logout.js";
+import { orgCreateCommand, orgListCommand } from "./commands/org.js";
 import {
 	peersAllowlistCommand,
 	peersDecideCommand,
@@ -45,6 +48,7 @@ import { relayCommand } from "./commands/relay.js";
 import { searchCommand } from "./commands/search.js";
 import { requestCommand, sendCommand } from "./commands/send.js";
 import { serveCommand } from "./commands/serve.js";
+import { whoamiCommand } from "./commands/whoami.js";
 import { AgxCliError, EXIT, HumanActionRequiredError } from "./lib/errors.js";
 import {
 	emitStdoutJson,
@@ -102,6 +106,69 @@ export function buildProgram(): Command {
 	function withGlobals<T extends object>(options: T): T {
 		return { ...program.opts<Record<string, unknown>>(), ...options };
 	}
+
+	// ----------------------------------------------------------------- login
+
+	program
+		.command("login")
+		.description(
+			"log in through the browser: approve a scoped, expiring key for one organization",
+		)
+		.option(
+			"--api-base-url <url>",
+			"server to log in to (default https://app.ellaworks.ai)",
+		)
+		.option("--org <slug>", "preselect this organization on the approval page")
+		.option("--new-org", "create a new organization on the approval page")
+		.option("--org-name <name>", "--new-org: prefill the organization name")
+		.option("--org-slug <slug>", "--new-org: prefill the organization slug")
+		.option("--no-browser", "do not open a browser; just print the URL")
+		.option(
+			"--no-wait",
+			"do not wait: exit 7 with the URL and code; re-run to finish (for harnesses)",
+		)
+		.option(
+			"--force",
+			"log in again even if this profile is already logged in",
+		)
+		.action((options) => loginCommand(withGlobals(options)));
+
+	program
+		.command("logout")
+		.description("revoke this profile's key on the server and forget it")
+		.option("--all", "log out of every profile")
+		.option(
+			"--local",
+			"forget the key even when the server cannot be reached to revoke it",
+		)
+		.action((options) => logoutCommand(withGlobals(options)));
+
+	program
+		.command("whoami")
+		.description(
+			"show who the stored credential acts as, according to the server",
+		)
+		.action((options) => whoamiCommand(withGlobals(options)));
+
+	const org = program
+		.command("org")
+		.description("organizations this credential can see");
+	org
+		.command("list")
+		.description("list organizations (a login key sees only its own)")
+		.action((options) => orgListCommand(withGlobals(options)));
+	org
+		.command("create <name>")
+		.description(
+			"create an organization in the browser (same as agx login --new-org)",
+		)
+		.option("--slug <slug>", "prefill the organization slug")
+		.option("--api-base-url <url>", "server to log in to")
+		.option("--no-browser", "do not open a browser; just print the URL")
+		.option("--no-wait", "do not wait: exit 7 with the URL and code")
+		.action((name: string, options) =>
+			orgCreateCommand(name, withGlobals(options)),
+		);
 
 	// ---------------------------------------------------------------- config
 

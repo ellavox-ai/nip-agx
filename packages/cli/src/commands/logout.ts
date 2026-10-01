@@ -1,0 +1,213 @@
+import { createApiClient, toCliError } from "../lib/api.js";
+import {
+	getProfile,
+	loadConfig,
+	resolveProfileName,
+	updateProfile,
+} from "../lib/config.js";
+import {
+	type CredentialEntry,
+	getCredential,
+	listCredentials,
+	originOf,
+	removeCredential,
+} from "../lib/credentials.js";
+import { removePendingLogin } from "../lib/device-flow.js";
+import { AgxCliError, EXIT } from "../lib/errors.js";
+import { json, notice, ok, warn } from "../lib/output.js";
+
+/**
+ * `agx logout`: revoke the profile's key on the server, then forget it.
+ *
+ * A key is revoked against the origin it was issued for, never the current
+ * `apiBaseUrl`, through the self-revoke `prm.apiKeys.delete` (spec §1.6). A key
+ * that the server no longer knows (401/404) is simply forgotten. A network
+ * failure keeps the key, so it can still be revoked later, unless `--local`.
+ */
+
+export interface LogoutOptions {
+	profile?: string;
+	all?: boolean;
+	local?: boolean;
+}
+
+export type LogoutReason =
+	/** Revoked on the server, then forgotten. */
+	| "revoked"
+	/** The server no longer knew the key (401/404); forgotten. */
+	| "already-invalid"
+	/** `--local`: the server could not revoke it; forgotten anyway. */
+	| "not-revoked-local"
+	/** The server could not revoke it; KEPT, so it can be retried. */
+	| "revoke-failed"
+	/** A 0.3 key: forgotten, never revoked. */
+	| "legacy-key-cleared"
+	| "not-logged-in";
+
+export interface LogoutRow {
+	profile: string;
+	revoked: boolean;
+	reason: LogoutReason;
+}
+
+type RevokeResult = "revoked" | "already-invalid";
+
+/** Revoke one stored key against its own origin. Throws on anything other
+ * than success / 401 / 404. */
+async function revoke(entry: CredentialEntry): Promise<RevokeResult> {
+	const origin = originOf(entry.apiBaseUrl);
+	if (!origin) {
+		return "already-invalid";
+	}
+	const client = createApiClient({ baseUrl: origin, apiKey: entry.apiKey });
+	const classify = (error: unknown): RevokeResult => {
+		const err = error as { status?: number; code?: string };
+		if (
+			err?.status === 401 ||
+			err?.status === 404 ||
+			err?.code === "UNAUTHORIZED" ||
+			err?.code === "NOT_FOUND"
+		) {
+			return "already-invalid";
+		}
+		throw toCliError(error, "prm.apiKeys.delete", origin);
+	};
+
+	let apiKeyId = entry.apiKeyId;
+	if (!apiKeyId) {
+		// A manual key does not know its own id: ask the server first.
+		try {
+			const principal = (await client.account.principal.get({})) as {
+				apiKey?: { id?: string } | null;
+			};
+			apiKeyId = principal.apiKey?.id ?? null;
+		} catch (error) {
+			return classify(error);
+		}
+		if (!apiKeyId) {
+			return "already-invalid";
+		}
+	}
+	try {
+		await client.prm.apiKeys.delete({ apiKeyId });
+		return "revoked";
+	} catch (error) {
+		return classify(error);
+	}
+}
+
+async function logoutProfile(
+	profileName: string,
+	options: LogoutOptions,
+): Promise<{ row: LogoutRow; failure: AgxCliError | null }> {
+	const entry = getCredential(profileName);
+	const legacyKey = getProfile(profileName).apiKey;
+	removePendingLogin(profileName);
+
+	if (!entry && !legacyKey) {
+		return {
+			row: { profile: profileName, revoked: false, reason: "not-logged-in" },
+			failure: null,
+		};
+	}
+
+	let row: LogoutRow;
+	let failure: AgxCliError | null = null;
+	if (entry && (entry.source === "login" || entry.source === "manual")) {
+		try {
+			const result = await revoke(entry);
+			removeCredential(profileName);
+			row = { profile: profileName, revoked: result === "revoked", reason: result };
+		} catch (error) {
+			const cli =
+				error instanceof AgxCliError
+					? error
+					: toCliError(error, "prm.apiKeys.delete", entry.apiBaseUrl);
+			if (options.local) {
+				removeCredential(profileName);
+				row = { profile: profileName, revoked: false, reason: "not-revoked-local" };
+				notice(
+					`Forgot the key of profile "${profileName}" without revoking it (${cli.message}). It stays valid until it expires${entry.expiresAt ? ` on ${entry.expiresAt.slice(0, 10)}` : ""}; revoke it in Settings → API keys.`,
+				);
+			} else {
+				row = { profile: profileName, revoked: false, reason: "revoke-failed" };
+				failure = new AgxCliError(
+					`Could not revoke the key of profile "${profileName}": ${cli.message} The key was kept.`,
+					{
+						exitCode: cli.exitCode,
+						remediation:
+							"Retry when the server is reachable, or forget the key on this machine only:\n    agx logout --local",
+					},
+				);
+				return { row, failure };
+			}
+		}
+	} else {
+		// A 0.3 key (still in config.json, or migrated out of it): agx never
+		// learned what it is for, so it is cleared, not revoked.
+		if (entry) {
+			removeCredential(profileName);
+		}
+		row = { profile: profileName, revoked: false, reason: "legacy-key-cleared" };
+		notice(
+			`Cleared the pre-login API key of profile "${profileName}" on this machine. It was NOT revoked: revoke it in Settings → API keys.`,
+		);
+	}
+	if (legacyKey) {
+		updateProfile(profileName, { apiKey: null });
+	}
+	return { row, failure };
+}
+
+export async function logoutCommand(options: LogoutOptions): Promise<void> {
+	const profiles = options.all
+		? [
+				...new Set([
+					...Object.keys(listCredentials()),
+					...Object.entries(loadConfig().profiles)
+						.filter(([, profile]) => profile.apiKey)
+						.map(([name]) => name),
+				]),
+			]
+		: [resolveProfileName(options.profile)];
+
+	const rows: LogoutRow[] = [];
+	const failures: AgxCliError[] = [];
+	for (const profileName of profiles) {
+		const { row, failure } = await logoutProfile(profileName, options);
+		rows.push(row);
+		if (failure) {
+			failures.push(failure);
+			continue;
+		}
+		switch (row.reason) {
+			case "revoked":
+				ok(`Logged out of profile "${row.profile}"; the key was revoked.`);
+				break;
+			case "already-invalid":
+				ok(
+					`Logged out of profile "${row.profile}"; the server no longer knew the key.`,
+				);
+				break;
+			case "not-logged-in":
+				ok(`Profile "${row.profile}" was not logged in.`);
+				break;
+			default:
+				ok(`Logged out of profile "${row.profile}" on this machine.`);
+		}
+	}
+	if (process.env.AGX_API_KEY) {
+		warn(
+			"AGX_API_KEY is still set in this shell, so agx commands keep using it. Unset it:  unset AGX_API_KEY",
+		);
+	}
+	json({ loggedOut: rows });
+	if (failures.length > 0) {
+		throw failures.length === 1
+			? failures[0]
+			: new AgxCliError(failures.map((f) => f.message).join("\n"), {
+					exitCode: failures[0]?.exitCode ?? EXIT.network,
+					remediation: failures[0]?.remediation ?? null,
+				});
+	}
+}
