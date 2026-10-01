@@ -74,6 +74,14 @@ export async function domainAddCommand(
 	domain: string,
 	options: DomainOptions,
 ): Promise<void> {
+	// Check the handle before claiming anything: a claim the server has
+	// already made cannot be taken back by a usage error.
+	if (options.handle !== undefined && !HANDLE_RE.test(options.handle)) {
+		throw usageError(
+			`--handle "${options.handle}" is not a valid NIP-05 name.`,
+			"Use lowercase letters, digits, '-', '_' or '.', for example --handle invoice-desk",
+		);
+	}
 	const { profileName, creds, client } = ctx(options);
 	if (LOCAL_HOST_RE.test(domain)) {
 		warn(
@@ -93,12 +101,6 @@ export async function domainAddCommand(
 		throw toCliError(error, "createDomain", creds.baseUrl);
 	}
 	const handle = options.handle ?? "<handle>";
-	if (options.handle !== undefined && !HANDLE_RE.test(handle)) {
-		throw usageError(
-			`--handle "${handle}" is not a valid NIP-05 name.`,
-			"Use lowercase letters, digits, '-', '_' or '.', for example --handle invoice-desk",
-		);
-	}
 	let pubkeyHex: string | null = null;
 	try {
 		pubkeyHex = loadIdentityFile(profileName, {

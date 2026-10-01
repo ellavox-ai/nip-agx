@@ -204,9 +204,11 @@ describe("agx domain", () => {
 		expect(human.stdout).toContain(`"invoice-desk": "${shown.pubkey}"`);
 	});
 
-	it("add refuses a handle that is not a NIP-05 name", async () => {
+	it("add refuses a handle that is not a NIP-05 name before claiming the domain", async () => {
 		mock.setRpc("agentIndex/createDomain", () => ({ output: domain(false) }));
 		expect((await agx("domain", "add", "acme.com", "--handle", "Bad Name")).code).toBe(2);
+		expect(mock.calls("/api/rpc/agentIndex/createDomain")).toEqual([]);
+		expect(mock.requests).toEqual([]);
 	});
 
 	it("verify --wait polls no faster than every 15 s until verified", async () => {
