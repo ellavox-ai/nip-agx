@@ -432,7 +432,10 @@ function fromTransportError(
 		});
 	}
 
-	if ((code !== null && UNREACHABLE_CODES.has(code)) || message === "fetch failed") {
+	if (
+		(code !== null && UNREACHABLE_CODES.has(code)) ||
+		message === "fetch failed"
+	) {
 		return new AgxCliError(
 			`${context}: cannot reach the API${code ? ` (${code})` : ""}.`,
 			{
@@ -447,7 +450,9 @@ function fromTransportError(
 	}
 
 	// A 3xx the link decoded anyway, or an HTML error page: never a result.
-	if (/^(Cannot parse response body|Invalid RPC response format)/.test(message)) {
+	if (
+		/^(Cannot parse response body|Invalid RPC response format)/.test(message)
+	) {
 		return new AgxCliError(
 			`${context}: the server's answer was not an API response (a redirect or an HTML page).`,
 			{

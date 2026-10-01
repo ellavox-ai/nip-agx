@@ -710,7 +710,8 @@ export function inspectLock(path: string): LockInfo | null {
 	}
 	if (pid === process.pid) {
 		const ours = heldLocks.get(path);
-		return verdict(ours !== undefined && ours === record.token ? null : "own-pid");
+		const held = ours !== undefined && ours === record.token;
+		return verdict(held ? null : "own-pid");
 	}
 	const now = runtime().now();
 	const atMs = at ? Date.parse(at) : Number.NaN;

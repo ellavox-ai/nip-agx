@@ -311,7 +311,10 @@ export function effectiveApiBaseUrl(profileName: string): {
  * `targetOrigin`, storing it again binds it there. agx never rebinds a key on
  * its own: that would undo the binding.
  */
-export function rebindHint(source: CredentialSource, targetOrigin: string): string {
+export function rebindHint(
+	source: CredentialSource,
+	targetOrigin: string,
+): string {
 	if (source === "login") {
 		return "";
 	}

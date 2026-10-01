@@ -403,7 +403,8 @@ export async function doctorCommand(options: DoctorOptions): Promise<void> {
 	const loginLock = pendingLoginLockPath(profileName);
 	const lock = inspectLock(loginLock);
 	if (lock?.stale) {
-		const holder = `${lock.pid !== null ? `agx process ${lock.pid}` : "an agx process"}${lock.at ? `, last heartbeat ${lock.at}` : ""}`;
+		const who = lock.pid !== null ? `agx process ${lock.pid}` : "an agx process";
+		const holder = lock.at ? `${who}, last heartbeat ${lock.at}` : who;
 		if (options.fixPerms) {
 			removePrivateFile(loginLock);
 			checks.push({

@@ -215,7 +215,12 @@ async function pollWithLock(
 ): Promise<
 	| PollOutcome
 	| { kind: "finished"; entry: CredentialEntry }
-	| { kind: "locked"; pending: PendingLogin; lockPath: string; lock: LockInfo | null }
+	| {
+			kind: "locked";
+			pending: PendingLogin;
+			lockPath: string;
+			lock: LockInfo | null;
+	  }
 > {
 	const rt = runtime();
 	const lockPath = pendingLoginLockPath(profileName);
@@ -243,7 +248,12 @@ async function pollWithLock(
 		}
 		if (once && rt.now() >= patienceUntil) {
 			// Another process holds the lock and has not finished: say who.
-			return { kind: "locked", pending, lockPath, lock: inspectLock(lockPath) };
+			return {
+				kind: "locked",
+				pending,
+				lockPath,
+				lock: inspectLock(lockPath),
+			};
 		}
 		try {
 			await rt.sleep(LOCK_RETRY_MS, signal);
