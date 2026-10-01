@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,7 +28,8 @@ interface Run {
 let home: string;
 let mock: MockIndexServer;
 
-function agx(...args: string[]): Promise<Run> {
+/** Start the built CLI; `done` settles when it exits. */
+function start(...args: string[]): { child: ChildProcess; done: Promise<Run> } {
 	const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1", AGX_NO_BROWSER: "1" };
 	for (const key of Object.keys(env)) {
 		if (key.startsWith("AGX_") && key !== "AGX_NO_BROWSER") {
@@ -36,19 +37,34 @@ function agx(...args: string[]): Promise<Run> {
 		}
 	}
 	env.AGX_HOME = home;
-	return new Promise((resolve, reject) => {
-		const child = spawn(process.execPath, [AGX, ...args], { env, stdio: ["ignore", "pipe", "pipe"] });
+	const child = spawn(process.execPath, [AGX, ...args], { env, stdio: ["ignore", "pipe", "pipe"] });
+	const done = new Promise<Run>((resolve, reject) => {
 		let stdout = "";
 		let stderr = "";
-		child.stdout.on("data", (d: Buffer) => {
+		child.stdout?.on("data", (d: Buffer) => {
 			stdout += d.toString();
 		});
-		child.stderr.on("data", (d: Buffer) => {
+		child.stderr?.on("data", (d: Buffer) => {
 			stderr += d.toString();
 		});
 		child.on("error", reject);
 		child.on("close", (code) => resolve({ code, stdout, stderr }));
 	});
+	return { child, done };
+}
+
+function agx(...args: string[]): Promise<Run> {
+	return start(...args).done;
+}
+
+async function until(condition: () => boolean, timeoutMs: number): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!condition()) {
+		if (Date.now() > deadline) {
+			throw new Error("condition not met in time");
+		}
+		await new Promise((r) => setTimeout(r, 25));
+	}
 }
 
 describe.skipIf(!existsSync(AGX))("dist/agx.js login wiring", () => {
@@ -95,6 +111,19 @@ describe.skipIf(!existsSync(AGX))("dist/agx.js login wiring", () => {
 		expect(run.code).toBe(7);
 		expect(JSON.parse(run.stdout).actionRequired.url).toBe(`${mock.origin}/elladex/listings/l_7?org=acme-robotics`);
 	});
+
+	it("SIGTERM during a blocking login releases the poll lock, keeps the code and exits 130", async () => {
+		const profileDir = join(home, "profiles", "term");
+		const lock = join(profileDir, "pending-login.lock");
+		const { child, done } = start("login", "--json", "--api-base-url", mock.origin, "--profile", "term");
+		// The lock is taken once the hand-off is out and the first wait begins.
+		await until(() => existsSync(lock), 10_000);
+		child.kill("SIGTERM");
+		const run = await done;
+		expect(run.code, run.stderr).toBe(130);
+		expect(existsSync(lock)).toBe(false);
+		expect(existsSync(join(profileDir, "pending-login.json"))).toBe(true);
+	}, 20_000);
 
 	it("commander's own errors keep their exit status", async () => {
 		expect((await agx("login", "--no-such-flag")).code).toBe(1);
