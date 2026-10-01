@@ -30,6 +30,11 @@ import {
 } from "../lib/output.js";
 import { configPath, credentialsPath } from "../lib/paths.js";
 import { runtime } from "../lib/runtime.js";
+import {
+	isWellFormedApiKey,
+	malformedApiKeyError,
+	rememberSecret,
+} from "../lib/secrets.js";
 import { readSecretLine, stdinIsTTY } from "../lib/stdin.js";
 
 export interface ConfigOptions {
@@ -127,6 +132,14 @@ async function setApiKey(
 	if (!key) {
 		throw usageError("The key is empty.");
 	}
+	if (!isWellFormedApiKey(key)) {
+		throw malformedApiKeyError("The value given", {
+			exitCode: EXIT.usage,
+			remediation:
+				'Pipe exactly the key, on one line:\n    printf %s "$KEY" | agx config set apiKey --stdin',
+		});
+	}
+	rememberSecret(key);
 	const base = effectiveApiBaseUrl(profileName);
 	const baseUrl = assertApiBaseUrl(base.raw, { label: base.label });
 	const origin = originOf(baseUrl) ?? baseUrl;

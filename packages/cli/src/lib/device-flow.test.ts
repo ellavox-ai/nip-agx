@@ -333,6 +333,21 @@ describe("pollDeviceToken", () => {
 		}
 	});
 
+	it.each([
+		["LF", "ela_THEKEYTHEKEY\nrest"],
+		["CR", "ela_THEKEYTHEKEY\rrest"],
+		["NUL", "ela_THEKEYTHEKEY\u0000rest"],
+		["a space", "ela_THEKEYTHEKEY rest"],
+		["empty", ""],
+	])("a 200 whose access_token contains %s → 6, never stored, never quoted", async (_label, token) => {
+		const body = { ...CONTRACT.deviceToken.success, access_token: token };
+		const h = harness([{ status: 200, body }]);
+		const error = await exitOf(pollDeviceToken(BASE, pending(), {}, h.deps));
+		expect(error.exitCode).toBe(EXIT.remote);
+		expect(error.message).toContain("access_token");
+		expect(`${error.message} ${error.remediation}`).not.toContain("THEKEYTHEKEY");
+	});
+
 	it("once: waits out the rest of the interval since lastPolledAt, polls once, reports pending", async () => {
 		const h = harness([oauth("authorization_pending")]);
 		const outcome = await pollDeviceToken(

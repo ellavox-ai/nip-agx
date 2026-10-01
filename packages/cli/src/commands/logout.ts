@@ -15,6 +15,7 @@ import {
 import { removePendingLogin } from "../lib/device-flow.js";
 import { AgxCliError, EXIT } from "../lib/errors.js";
 import { json, notice, ok, warn } from "../lib/output.js";
+import { isWellFormedApiKey } from "../lib/secrets.js";
 
 /**
  * `agx logout`: revoke the profile's key on the server, then forget it.
@@ -111,7 +112,15 @@ async function logoutProfile(
 
 	let row: LogoutRow;
 	let failure: AgxCliError | null = null;
-	if (entry && (entry.source === "login" || entry.source === "manual")) {
+	if (entry && !isWellFormedApiKey(entry.apiKey)) {
+		// Spaces or control characters: no server can accept it as a key, and
+		// sending it would only get it quoted back in an error. Forget it.
+		removeCredential(profileName);
+		row = { profile: profileName, revoked: false, reason: "already-invalid" };
+		notice(
+			`The key stored for profile "${profileName}" was malformed, so no server could accept it; forgot it without sending it anywhere.`,
+		);
+	} else if (entry && (entry.source === "login" || entry.source === "manual")) {
 		try {
 			const result = await revoke(entry);
 			removeCredential(profileName);

@@ -1,4 +1,4 @@
-import { createORPCClient } from "@orpc/client";
+import { createORPCClient, ORPCError } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
 import {
 	type ActionRequiredReason,
@@ -8,6 +8,12 @@ import {
 } from "./errors.js";
 import { DEFAULT_API_BASE_URL } from "./config.js";
 import { runtime } from "./runtime.js";
+import {
+	isWellFormedApiKey,
+	malformedApiKeyError,
+	redactSecrets,
+	rememberSecret,
+} from "./secrets.js";
 import { AGX_CLI_VERSION } from "./version.js";
 
 /**
@@ -44,6 +50,12 @@ export interface ApiTarget {
 }
 
 export function createApiClient(creds: ApiTarget): AgxApiClient {
+	// The last check before a key goes on the wire. Every entry point checks
+	// the shape too, with a better label; this catches whatever slipped past.
+	if (!isWellFormedApiKey(creds.apiKey)) {
+		throw malformedApiKeyError("The API key for this command");
+	}
+	rememberSecret(creds.apiKey);
 	const link = new RPCLink({
 		url: `${creds.baseUrl}/api/rpc`,
 		headers: async () => ({
@@ -172,7 +184,6 @@ interface OrpcErrorLike {
 	code?: string;
 	status?: number;
 	message?: string;
-	cause?: { code?: string };
 	data?: ErrorData;
 }
 
@@ -322,6 +333,113 @@ function fromDataCode(
 	}
 }
 
+/** An answer from the API, as oRPC decodes it (what `toCliError` may quote). */
+function isOrpcError(error: unknown): boolean {
+	if (error instanceof ORPCError) {
+		return true;
+	}
+	const e = error as { code?: unknown; status?: unknown; defined?: unknown };
+	return (
+		typeof e?.code === "string" &&
+		typeof e?.status === "number" &&
+		typeof e?.defined === "boolean"
+	);
+}
+
+/** Node and undici error codes that mean "the server could not be reached". */
+const UNREACHABLE_CODES = new Set([
+	"ECONNREFUSED",
+	"ECONNRESET",
+	"ENOTFOUND",
+	"EAI_AGAIN",
+	"ETIMEDOUT",
+	"EHOSTUNREACH",
+	"ENETUNREACH",
+	"EPIPE",
+	"UND_ERR_CONNECT_TIMEOUT",
+	"UND_ERR_HEADERS_TIMEOUT",
+	"UND_ERR_BODY_TIMEOUT",
+	"UND_ERR_SOCKET",
+	"UND_ERR_CLOSED",
+]);
+
+/** An identifier-like string (an error name or code), or null. Anything else
+ * could be text that quotes a secret, so it is not printed. */
+function token(value: unknown): string | null {
+	return typeof value === "string" && /^[A-Za-z0-9_]{1,40}$/.test(value)
+		? value
+		: null;
+}
+
+/**
+ * A failure that is NOT an answer from the API: the request was never sent,
+ * never arrived, or what came back was not an oRPC response.
+ *
+ * Its raw message is never printed. undici quotes the offending header value —
+ * the API key — when it refuses one, and a `fetch failed` hides its real
+ * reason in `cause`. Only the error's name and Node/undici code are shown;
+ * `AGX_DEBUG=1` adds the message, redacted.
+ */
+function fromTransportError(
+	error: unknown,
+	context: string,
+	baseUrl: string | undefined,
+): AgxCliError {
+	const err = error as {
+		name?: unknown;
+		message?: unknown;
+		code?: unknown;
+		cause?: { name?: unknown; code?: unknown } | null;
+	};
+	const message = typeof err?.message === "string" ? err.message : "";
+	const code = token(err?.code) ?? token(err?.cause?.code);
+
+	if ((code !== null && UNREACHABLE_CODES.has(code)) || message === "fetch failed") {
+		return new AgxCliError(
+			`${context}: cannot reach the API${code ? ` (${code})` : ""}.`,
+			{
+				exitCode: EXIT.network,
+				// "Start it" is only offered when the target actually is local; for a real
+				// deployment the useful check is the configured URL.
+				remediation: isLocal(baseUrl)
+					? `Start the agent index at ${baseUrl}, then re-run the command.\n  To use a different index:  agx config set apiBaseUrl <url>`
+					: "Check the API is running and that `apiBaseUrl` is correct:\n    agx config show",
+			},
+		);
+	}
+
+	// A 3xx the link decoded anyway, or an HTML error page: never a result.
+	if (/^(Cannot parse response body|Invalid RPC response format)/.test(message)) {
+		return new AgxCliError(
+			`${context}: the server's answer was not an API response (a redirect or an HTML page).`,
+			{
+				exitCode: EXIT.remote,
+				remediation:
+					"Check that apiBaseUrl is the API's own origin:\n    agx config show",
+			},
+		);
+	}
+
+	const name = token(err?.name) ?? "Error";
+	return new AgxCliError(
+		`${context}: the request failed before the API answered (${name}${code ? ` ${code}` : ""}).`,
+		{
+			exitCode: EXIT.generic,
+			remediation: process.env.AGX_DEBUG
+				? `Details: ${debugText(message)}`
+				: "Check the profile, then re-run with AGX_DEBUG=1 for details:\n    agx doctor",
+		},
+	);
+}
+
+/** An error message made safe to print for AGX_DEBUG: secrets redacted, no
+ * control characters, bounded. */
+function debugText(message: string): string {
+	return redactSecrets(message)
+		.replace(/[\x00-\x1f\x7f-\x9f]/g, " ")
+		.slice(0, 300);
+}
+
 /**
  * Did the server refuse the KEY itself — unknown, revoked, deleted or expired?
  * Only then may agx forget a key without revoking it.
@@ -362,47 +480,19 @@ export function toCliError(
 	if (error instanceof AgxCliError) {
 		return error;
 	}
+	if (!isOrpcError(error)) {
+		return fromTransportError(error, context, baseUrl);
+	}
 	const err = error as OrpcErrorLike;
-	const code = err?.code ?? err?.cause?.code;
-	const message =
-		str(err?.data?.message) ?? err?.message ?? String(error);
+	const code = err.code;
+	// The server's own words. Redacted all the same, since agx prints them.
+	const message = redactSecrets(str(err.data?.message) ?? err.message ?? "");
 
-	if (err?.data && typeof err.data === "object") {
+	if (err.data && typeof err.data === "object") {
 		const mapped = fromDataCode(err.data, context, baseUrl);
 		if (mapped) {
 			return mapped;
 		}
-	}
-
-	if (
-		code === "ECONNREFUSED" ||
-		code === "ENOTFOUND" ||
-		code === "ETIMEDOUT" ||
-		/fetch failed/i.test(message)
-	) {
-		return new AgxCliError(
-			`${context}: cannot reach the API (${message}).`,
-			{
-				exitCode: EXIT.network,
-				// "Start it" is only offered when the target actually is local; for a real
-				// deployment the useful check is the configured URL.
-				remediation: isLocal(baseUrl)
-					? `Start the agent index at ${baseUrl}, then re-run the command.\n  To use a different index:  agx config set apiBaseUrl <url>`
-					: "Check the API is running and that `apiBaseUrl` is correct:\n    agx config show",
-			},
-		);
-	}
-
-	// A 3xx the link decoded anyway, or an HTML error page: never a result.
-	if (/Cannot parse response body/i.test(message)) {
-		return new AgxCliError(
-			`${context}: the server's answer was not an API response (a redirect or an HTML page).`,
-			{
-				exitCode: EXIT.remote,
-				remediation:
-					"Check that apiBaseUrl is the API's own origin:\n    agx config show",
-			},
-		);
 	}
 
 	if (code === "UNAUTHORIZED" || err?.status === 401) {

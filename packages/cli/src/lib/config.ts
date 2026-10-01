@@ -19,6 +19,11 @@ import {
 import { notice } from "./output.js";
 import { configPath, writePrivateJson } from "./paths.js";
 import { runtime } from "./runtime.js";
+import {
+	isWellFormedApiKey,
+	malformedApiKeyError,
+	rememberSecret,
+} from "./secrets.js";
 
 /**
  * Profile store. A profile is one (identity, API credential, organization,
@@ -330,6 +335,13 @@ export function resolveApiKey(profileName: string): ResolvedApiKey {
 
 	const envKey = process.env.AGX_API_KEY;
 	if (envKey) {
+		if (!isWellFormedApiKey(envKey)) {
+			throw malformedApiKeyError("AGX_API_KEY", {
+				remediation:
+					"Set AGX_API_KEY to the key alone (no spaces or line breaks), or unset it to use this profile's own credential:\n    unset AGX_API_KEY",
+			});
+		}
+		rememberSecret(envKey);
 		return {
 			profileName,
 			baseUrl,
@@ -355,6 +367,12 @@ export function resolveApiKey(profileName: string): ResolvedApiKey {
 				"Log in again:\n    agx login",
 			);
 		}
+		if (!isWellFormedApiKey(entry.apiKey)) {
+			throw malformedApiKeyError(
+				`The API key stored for profile "${profileName}" in credentials.json`,
+			);
+		}
+		rememberSecret(entry.apiKey);
 		return {
 			profileName,
 			baseUrl,
@@ -366,6 +384,12 @@ export function resolveApiKey(profileName: string): ResolvedApiKey {
 
 	const stored = getProfile(profileName);
 	if (stored.apiKey) {
+		if (!isWellFormedApiKey(stored.apiKey)) {
+			throw malformedApiKeyError(
+				`The 0.3 API key of profile "${profileName}" in config.json`,
+			);
+		}
+		rememberSecret(stored.apiKey);
 		return {
 			profileName,
 			baseUrl,

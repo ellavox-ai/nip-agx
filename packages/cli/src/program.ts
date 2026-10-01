@@ -56,6 +56,7 @@ import {
 	setColor,
 	setJsonMode,
 } from "./lib/output.js";
+import { redactSecrets } from "./lib/secrets.js";
 import { AGX_CLI_VERSION } from "./lib/version.js";
 
 /**
@@ -616,18 +617,20 @@ export function reportCliError(error: unknown): number {
 		}
 		return error.exitCode;
 	}
+	// Every error line passes through redactSecrets: no key agx has sent may be
+	// printed, whatever wrote the message.
 	if (error instanceof AgxCliError) {
-		console.error(`\n${kleur.red("✗")} ${error.message}`);
+		console.error(`\n${kleur.red("✗")} ${redactSecrets(error.message)}`);
 		if (error.remediation) {
-			console.error(kleur.dim(`\n  ${error.remediation}\n`));
+			console.error(kleur.dim(`\n  ${redactSecrets(error.remediation)}\n`));
 		}
 		return error.exitCode;
 	}
 	console.error(
-		`\n${kleur.red("✗")} ${error instanceof Error ? error.message : String(error)}`,
+		`\n${kleur.red("✗")} ${redactSecrets(error instanceof Error ? error.message : String(error))}`,
 	);
-	if (process.env.AGX_DEBUG && error instanceof Error) {
-		console.error(error.stack);
+	if (process.env.AGX_DEBUG && error instanceof Error && error.stack) {
+		console.error(redactSecrets(error.stack));
 	}
 	return EXIT.generic;
 }

@@ -2,7 +2,7 @@ import { chmodSync, existsSync } from "node:fs";
 import { GIFT_WRAP_KIND } from "@nostr-agx/nostr";
 import kleur from "kleur";
 import WebSocket from "ws";
-import { createApiClient } from "../lib/api.js";
+import { createApiClient, toCliError } from "../lib/api.js";
 import {
 	effectiveProfile,
 	type ResolvedApiCredentials,
@@ -409,20 +409,18 @@ export async function doctorCommand(options: DoctorOptions): Promise<void> {
 				detail: `key accepted for org "${creds.orgSlug}" (${result.total} listing(s) visible)`,
 			});
 		} catch (error) {
-			const message =
-				(error as { data?: { message?: string }; message?: string })
-					?.data?.message ??
-				(error as { message?: string })?.message ??
-				String(error);
+			// Through toCliError, never the raw message: a transport error can
+			// quote the key (undici does, for a header it refuses).
+			const mapped = toCliError(error, "searchListings", creds.baseUrl);
 			checks.push({
 				name: "api credentials",
 				verdict: "fail",
-				detail: message,
+				detail: mapped.message,
 				remediation: /does not have access to this organization/i.test(
-					message,
+					mapped.message,
 				)
 					? `A key is bound to a single organization. Log in to "${creds.orgSlug}":\n    agx login --org ${creds.orgSlug}`
-					: "agx login",
+					: (mapped.remediation ?? "agx login"),
 			});
 		}
 	}

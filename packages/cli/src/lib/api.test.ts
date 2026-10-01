@@ -150,6 +150,45 @@ describe("toCliError: every §1.7 data.code", () => {
 			BASE,
 		);
 		expect(error.exitCode).toBe(5);
+		expect(error.message).toBe("x: cannot reach the API (ECONNREFUSED).");
+	});
+
+	it("never prints a transport error's own message: undici quotes the refused header value", () => {
+		const raw = new TypeError('Headers.append: "ela_HEADERSECRET\nrest" is an invalid header value.');
+		const error = toCliError(raw, "account.principal.get", BASE);
+		expect(error.exitCode).toBe(EXIT.generic);
+		expect(error.message).toBe("account.principal.get: the request failed before the API answered (TypeError).");
+		expect(`${error.message} ${error.remediation}`).not.toContain("HEADERSECRET");
+	});
+
+	it("a fetch failed whose cause quotes the key prints only the cause's code", () => {
+		const raw = Object.assign(new TypeError("fetch failed"), {
+			cause: Object.assign(new Error('invalid header "ela_CAUSESECRETCAUSE"'), { code: "UND_ERR_INVALID_ARG" }),
+		});
+		const error = toCliError(raw, "x", BASE);
+		expect(`${error.message} ${error.remediation}`).not.toContain("CAUSESECRET");
+	});
+
+	it("AGX_DEBUG adds the message, with remembered keys redacted", () => {
+		createApiClient({ baseUrl: BASE, apiKey: "ela_DEBUGSECRETDEBUGSECRET" }); // remembers the key
+		process.env.AGX_DEBUG = "1";
+		try {
+			const error = toCliError(new TypeError('bad "ela_DEBUGSECRETDEBUGSECRET"'), "x", BASE);
+			expect(error.remediation).toContain("[redacted]");
+			expect(error.remediation).not.toContain("DEBUGSECRET");
+		} finally {
+			delete process.env.AGX_DEBUG;
+		}
+	});
+
+	it("an oRPC error is still quoted (the server's words), but redacted", () => {
+		createApiClient({ baseUrl: BASE, apiKey: "ela_ECHOEDSECRETECHOED" });
+		const error = toCliError(
+			new ORPCError("BAD_REQUEST", { message: "bad key ela_ECHOEDSECRETECHOED" }),
+			"x",
+			BASE,
+		);
+		expect(error.message).toBe("x: bad key [redacted]");
 	});
 });
 
@@ -233,6 +272,17 @@ describe("createApiClient", () => {
 		expect(call?.headers["x-api-key"]).toBe(key.key);
 		expect(call?.headers["user-agent"]).toBe(userAgent());
 		expect(userAgent()).toMatch(/^agx\/\d+\.\d+\.\d+ \(node \d+\.\d+\.\d+; \w+\)$/);
+	});
+
+	it("refuses a malformed key before any request (exit 3), without quoting it", () => {
+		try {
+			createApiClient({ baseUrl: mock.origin, apiKey: "ela_CLIENTSECRET\nrest" });
+			expect.unreachable();
+		} catch (error) {
+			expect((error as AgxCliError).exitCode).toBe(EXIT.config);
+			expect((error as AgxCliError).message).not.toContain("CLIENTSECRET");
+		}
+		expect(mock.requests).toEqual([]);
 	});
 
 	it("refuses a redirect instead of decoding it as a result (exit 6)", async () => {

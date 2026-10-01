@@ -17,6 +17,7 @@ import {
 	writePrivateJson,
 } from "./paths.js";
 import { type Runtime, runtime, timeoutSignal } from "./runtime.js";
+import { isWellFormedApiKey } from "./secrets.js";
 
 /**
  * The CLI half of the device authorization grant (RFC 8628) as the index
@@ -86,9 +87,10 @@ export const pendingLoginSchema = z.object({
 export type PendingLogin = z.infer<typeof pendingLoginSchema>;
 
 /** The §1.3 success body. `organization` and `api_key_id` are required: a key
- * without them could not be bound or revoked, so it is never stored. */
+ * without them could not be bound or revoked, so it is never stored. Nor is
+ * an `access_token` that could not be sent as a header. */
 const tokenSuccessSchema = z.object({
-	access_token: z.string().min(1),
+	access_token: z.string().refine(isWellFormedApiKey),
 	token_type: z.string(),
 	expires_in: z.number().nullable().optional(),
 	expires_at: z.string().nullable().optional(),
@@ -516,16 +518,16 @@ export async function pollDeviceToken(
 		if (response.status === 200) {
 			const parsed = tokenSuccessSchema.safeParse(response.body);
 			if (!parsed.success) {
-				// Name the missing fields only: the body holds the key.
+				// Name the fields only, never a value: the body holds the key.
 				const fields = [
 					...new Set(
 						parsed.error.issues.map((issue) =>
 							String(issue.path[0] ?? "body"),
 						),
 					),
-				].filter((field) => field !== "access_token");
+				];
 				throw new AgxCliError(
-					`${host} approved the login but its answer is missing ${fields.join(", ") || "required fields"}; the key was not stored.`,
+					`${host} approved the login but its answer has missing or malformed fields (${fields.join(", ") || "body"}); the key was not stored.`,
 					{
 						exitCode: EXIT.remote,
 						remediation:

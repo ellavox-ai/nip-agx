@@ -49,6 +49,7 @@ import {
 } from "../lib/output.js";
 import { pendingLoginLockPath } from "../lib/paths.js";
 import { runtime } from "../lib/runtime.js";
+import { isWellFormedApiKey, rememberSecret } from "../lib/secrets.js";
 
 /**
  * `agx login`: the device authorization flow (spec §1.2–§1.4, §1.8).
@@ -354,6 +355,9 @@ async function currentPrincipal(
 	base: string,
 	apiKey: string,
 ): Promise<PrincipalLike | null> {
+	if (!isWellFormedApiKey(apiKey)) {
+		return null; // cannot be a working key: log in for a new one
+	}
 	try {
 		const client = createApiClient({ baseUrl: base, apiKey });
 		return (await client.account.principal.get({})) as PrincipalLike;
@@ -583,6 +587,7 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
 
 	// 7. Store the key, point the profile at this server and org, clean up.
 	const { token } = outcome;
+	rememberSecret(token.access_token);
 	const now = rt.now();
 	const entry: CredentialEntry = {
 		apiBaseUrl: originOf(base) ?? base,
