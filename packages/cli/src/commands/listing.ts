@@ -3,7 +3,7 @@ import kleur from "kleur";
 import { createApiClient, toCliError } from "../lib/api.js";
 import {
 	effectiveProfile,
-	requireApiCredentials,
+	resolveApiCredentials,
 	resolveProfileName,
 } from "../lib/config.js";
 import { usageError } from "../lib/errors.js";
@@ -73,11 +73,8 @@ function titleCase(slug: string): string {
 
 function ctx(options: ListingOptions) {
 	const profileName = resolveProfileName(options.profile);
+	const creds = resolveApiCredentials(profileName, { org: options.org });
 	const profile = effectiveProfile(profileName);
-	const creds = requireApiCredentials(
-		options.org ? { ...profile, orgSlug: options.org } : profile,
-		profileName,
-	);
 	return { profileName, profile, creds, client: createApiClient(creds) };
 }
 

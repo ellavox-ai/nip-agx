@@ -1,7 +1,24 @@
 import { existsSync, readFileSync } from "node:fs";
 import { z } from "zod";
-import { configError, usageError } from "./errors.js";
+import {
+	type CredentialEntry,
+	type CredentialSource,
+	getCredential,
+	isExpired,
+	originOf,
+	setCredential,
+} from "./credentials.js";
+import {
+	AgxCliError,
+	authError,
+	configError,
+	EXIT,
+	type ExitCode,
+	usageError,
+} from "./errors.js";
+import { notice } from "./output.js";
 import { configPath, writePrivateJson } from "./paths.js";
+import { runtime } from "./runtime.js";
 
 /**
  * Profile store. A profile is one (identity, API credential, organization,
@@ -10,8 +27,18 @@ import { configPath, writePrivateJson } from "./paths.js";
  * what makes the cross-org discovery step of the walkthrough runnable at all.
  */
 
+/** Where a new profile, and `agx login`, point by default. */
+export const DEFAULT_API_BASE_URL = "https://app.ellaworks.ai";
+
+/** The 0.3 default. A profile that still stores it is treated as "never set"
+ * by `agx login` only; every other command keeps using what is stored. */
+export const LEGACY_DEFAULT_API_BASE_URL = "http://localhost:3000";
+
 export const profileSchema = z.object({
-	apiBaseUrl: z.string().default("http://localhost:3000"),
+	apiBaseUrl: z.string().default(DEFAULT_API_BASE_URL),
+	/** 0.3 kept the API key here. 0.4 never writes one; a stored one is still
+	 * read (lowest precedence) and is moved to `credentials.json` on the next
+	 * config write. */
 	apiKey: z.string().nullable().default(null),
 	orgSlug: z.string().nullable().default(null),
 	relays: z.array(z.string()).default(["ws://127.0.0.1:7447"]),
@@ -60,7 +87,50 @@ export function loadConfig(): AgxConfig {
 }
 
 export function saveConfig(config: AgxConfig): void {
-	writePrivateJson(configPath(), config);
+	writePrivateJson(configPath(), migrateLegacyKeys(config));
+}
+
+/**
+ * Move every 0.3 `config.json` key into `credentials.json` (as
+ * `source: "migrated"`, bound to that profile's stored origin) before
+ * `config.json` is written again. The credential is written first, so a crash
+ * between the two writes leaves the key in both files, never in neither.
+ */
+function migrateLegacyKeys(config: AgxConfig): AgxConfig {
+	for (const [name, profile] of Object.entries(config.profiles)) {
+		if (!profile.apiKey) {
+			continue;
+		}
+		if (getCredential(name)) {
+			notice(
+				`Removed the API key of profile "${name}" from config.json: credentials.json already holds this profile's credential, which takes precedence.`,
+			);
+		} else {
+			const origin = originOf(profile.apiBaseUrl);
+			if (!origin) {
+				// Cannot bind it to an origin; leave it where it is rather than
+				// lose it. `agx doctor` reports the bad apiBaseUrl.
+				continue;
+			}
+			setCredential(name, {
+				apiBaseUrl: origin,
+				apiKey: profile.apiKey,
+				apiKeyId: null,
+				source: "migrated",
+				clientId: null,
+				organization: null,
+				user: null,
+				scopes: null,
+				expiresAt: null,
+				createdAt: new Date(runtime().now()).toISOString(),
+			});
+			notice(
+				`Moved the API key of profile "${name}" from config.json to credentials.json; it is now only ever sent to ${origin}.`,
+			);
+		}
+		profile.apiKey = null;
+	}
+	return config;
 }
 
 /** Resolve the active profile name: flag, then env, then the stored default. */
@@ -109,29 +179,190 @@ export interface ApiCredentials {
 	orgSlug: string;
 }
 
-/** Assert the three things every Agent Index call needs, with the exact command
- * to fix whichever one is missing. */
-export function requireApiCredentials(
-	profile: Profile,
-	profileName: string,
-): ApiCredentials {
-	if (!profile.apiKey) {
-		throw configError(
-			`Profile "${profileName}" has no API key.`,
-			"Mint a key scoped to your organization in the index you are talking to, then:\n    agx config set apiKey <key>",
+/** Where a key came from, in precedence order. */
+export type ApiKeySource = "env" | CredentialSource | "legacy-config";
+
+export interface ResolvedApiKey {
+	profileName: string;
+	/** The effective API base, already checked by {@link assertApiBaseUrl}. */
+	baseUrl: string;
+	apiKey: string;
+	source: ApiKeySource;
+	/** The `credentials.json` entry the key came from, if it came from one. */
+	entry: CredentialEntry | null;
+}
+
+export interface ResolvedApiCredentials extends ApiCredentials, ResolvedApiKey {}
+
+function isLoopbackHost(hostname: string): boolean {
+	return (
+		hostname === "localhost" ||
+		hostname === "127.0.0.1" ||
+		hostname === "[::1]" ||
+		hostname === "::1"
+	);
+}
+
+/**
+ * Check a base URL before any credential is sent to it, and normalise it (no
+ * trailing slash).
+ *
+ * - `https:`, or `http:` only for localhost / 127.0.0.1 / ::1: a key sent over
+ *   plain http to anything else is readable by every hop in between;
+ * - no user name or password, query or fragment: none of them belong in a base
+ *   URL, and each is a way to smuggle a lookalike past a reader.
+ */
+export function assertApiBaseUrl(
+	raw: string,
+	options?: { exitCode?: ExitCode; label?: string },
+): string {
+	const exitCode = options?.exitCode ?? EXIT.config;
+	const label = options?.label ?? "apiBaseUrl";
+	const fail = (problem: string, shown: string) =>
+		new AgxCliError(`${label} ${shown} ${problem}`, {
+			exitCode,
+			remediation: `Use the server's origin, for example ${DEFAULT_API_BASE_URL}, or http://localhost:3000 for a local stack.`,
+		});
+	let url: URL;
+	try {
+		url = new URL(raw);
+	} catch {
+		throw fail("is not a URL.", JSON.stringify(raw));
+	}
+	if (url.username || url.password) {
+		// Never echo it: the password is the part that would be printed.
+		throw fail("must not contain a user name or password.", "(redacted)");
+	}
+	const shown = JSON.stringify(raw);
+	if (url.protocol !== "https:" && url.protocol !== "http:") {
+		throw fail("must be an https:// URL.", shown);
+	}
+	if (url.search || url.hash || raw.includes("?") || raw.includes("#")) {
+		throw fail("must not contain a query or fragment.", shown);
+	}
+	if (url.protocol === "http:" && !isLoopbackHost(url.hostname)) {
+		throw fail(
+			"uses plain http, which is only allowed for localhost, 127.0.0.1 and ::1.",
+			shown,
 		);
 	}
-	if (!profile.orgSlug) {
+	return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+}
+
+/** The API base every API command talks to: `AGX_API_URL`, else the profile's. */
+export function effectiveApiBaseUrl(profileName: string): {
+	raw: string;
+	label: string;
+} {
+	const env = process.env.AGX_API_URL;
+	return env
+		? { raw: env, label: "AGX_API_URL" }
+		: {
+				raw: getProfile(profileName).apiBaseUrl,
+				label: `apiBaseUrl of profile "${profileName}"`,
+			};
+}
+
+/**
+ * Find the API key for a profile, in precedence order:
+ *
+ *   1. `AGX_API_KEY` (the caller supplied both key and target; no binding);
+ *   2. the profile's `credentials.json` entry, which is refused outright when
+ *      its origin is not the effective base's origin (exit 3, nothing sent) and
+ *      when it has expired (exit 4);
+ *   3. a 0.3 key still in `config.json`.
+ *
+ * None of them: exit 3 with `agx login`.
+ */
+export function resolveApiKey(profileName: string): ResolvedApiKey {
+	const base = effectiveApiBaseUrl(profileName);
+	const baseUrl = assertApiBaseUrl(base.raw, { label: base.label });
+
+	const envKey = process.env.AGX_API_KEY;
+	if (envKey) {
+		return {
+			profileName,
+			baseUrl,
+			apiKey: envKey,
+			source: "env",
+			entry: null,
+		};
+	}
+
+	const entry = getCredential(profileName);
+	if (entry) {
+		const keyOrigin = originOf(entry.apiBaseUrl);
+		const targetOrigin = originOf(baseUrl);
+		if (!keyOrigin || keyOrigin !== targetOrigin) {
+			throw configError(
+				`The credential of profile "${profileName}" was issued for ${keyOrigin ?? entry.apiBaseUrl}, but this command would send it to ${targetOrigin}. Nothing was sent.`,
+				`A key is only ever sent to the server that issued it. Either go back to that server:\n    agx config set apiBaseUrl ${keyOrigin ?? entry.apiBaseUrl}${process.env.AGX_API_URL ? "\n  (and unset AGX_API_URL)" : ""}\n  or log in to this one:\n    agx login --api-base-url ${targetOrigin}`,
+			);
+		}
+		if (isExpired(entry, runtime().now())) {
+			throw authError(
+				`The login of profile "${profileName}" expired on ${entry.expiresAt}.`,
+				"Log in again:\n    agx login",
+			);
+		}
+		return {
+			profileName,
+			baseUrl,
+			apiKey: entry.apiKey,
+			source: entry.source,
+			entry,
+		};
+	}
+
+	const stored = getProfile(profileName);
+	if (stored.apiKey) {
+		return {
+			profileName,
+			baseUrl,
+			apiKey: stored.apiKey,
+			source: "legacy-config",
+			entry: null,
+		};
+	}
+
+	throw configError(
+		`Profile "${profileName}" is not logged in.`,
+		"agx login\n  (CI: printf %s \"$KEY\" | agx config set apiKey --stdin)",
+	);
+}
+
+/**
+ * Everything an Agent Index call needs: {@link resolveApiKey} plus the
+ * organization, from `--org` > `AGX_ORG` > the profile's `orgSlug` > the
+ * login's own organization.
+ *
+ * A login key is bound to one organization, so asking it to act on another is
+ * refused here (exit 4) rather than by a 403 from the server.
+ */
+export function resolveApiCredentials(
+	profileName: string,
+	options?: { org?: string },
+): ResolvedApiCredentials {
+	const key = resolveApiKey(profileName);
+	const loginOrg = key.entry?.organization?.slug ?? null;
+	const orgSlug =
+		options?.org ??
+		process.env.AGX_ORG ??
+		getProfile(profileName).orgSlug ??
+		loginOrg;
+	if (!orgSlug) {
 		throw configError(
 			`Profile "${profileName}" has no organization slug.`,
-			"agx config set orgSlug acme",
+			"agx login   (or: agx config set orgSlug <slug>)",
 		);
 	}
-	return {
-		baseUrl: profile.apiBaseUrl.replace(/\/$/, ""),
-		apiKey: profile.apiKey,
-		orgSlug: profile.orgSlug,
-	};
+	if (loginOrg && orgSlug !== loginOrg) {
+		throw authError(
+			`This login is for organization "${loginOrg}", not "${orgSlug}".`,
+			`A login key acts on one organization. Log in to the other one in its own profile:\n    agx --profile ${orgSlug} login --org ${orgSlug}`,
+		);
+	}
+	return { ...key, orgSlug };
 }
 
 const SETTABLE = [

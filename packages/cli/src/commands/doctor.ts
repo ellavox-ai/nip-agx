@@ -3,17 +3,28 @@ import { GIFT_WRAP_KIND } from "@nostr-agx/nostr";
 import kleur from "kleur";
 import WebSocket from "ws";
 import { createApiClient } from "../lib/api.js";
-import { effectiveProfile, resolveProfileName } from "../lib/config.js";
+import {
+	effectiveProfile,
+	type ResolvedApiCredentials,
+	resolveApiCredentials,
+	resolveProfileName,
+} from "../lib/config.js";
 import { AgxCliError, EXIT } from "../lib/errors.js";
 import { loadIdentityFile } from "../lib/identity.js";
 import { heading, json, say } from "../lib/output.js";
 import {
 	agxHome,
 	configPath,
+	credentialsPath,
 	identityPath,
 	isTooPermissive,
+	pendingLoginPath,
 } from "../lib/paths.js";
+import { runtime } from "../lib/runtime.js";
 import { loadState } from "../lib/state.js";
+
+/** A login closer to expiry than this is worth a warning. */
+const EXPIRY_WARNING_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * Preflight. The things that silently break this workflow — an index that is
@@ -235,9 +246,12 @@ export async function doctorCommand(options: DoctorOptions): Promise<void> {
 	const checks: Check[] = [];
 
 	// 1. Permissions on the files holding a secret key and a bearer credential.
-	const permTargets = [configPath(), identityPath(profileName)].filter(
-		existsSync,
-	);
+	const permTargets = [
+		configPath(),
+		credentialsPath(),
+		identityPath(profileName),
+		pendingLoginPath(profileName),
+	].filter(existsSync);
 	const loose = permTargets.filter(isTooPermissive);
 	if (options.fixPerms) {
 		for (const path of loose) {
@@ -325,33 +339,64 @@ export async function doctorCommand(options: DoctorOptions): Promise<void> {
 				},
 	);
 
-	// 5. API credentials, org binding, and (incidentally) that the RPC transport works.
-	if (!profile.apiKey || !profile.orgSlug) {
+	// 5. API credentials: where the key comes from, that it may be sent to this
+	// server at all, that it is not about to expire, and that the server takes it.
+	let creds: ResolvedApiCredentials | null = null;
+	try {
+		creds = resolveApiCredentials(profileName);
+	} catch (error) {
+		if (!(error instanceof AgxCliError)) {
+			throw error;
+		}
 		checks.push({
 			name: "api credentials",
 			verdict: "fail",
-			detail: !profile.apiKey
-				? "no API key on this profile"
-				: "no organization slug on this profile",
-			remediation: !profile.apiKey
-				? "Mint an API key scoped to your organization, then:\n    agx config set apiKey <key>"
-				: "agx config set orgSlug <slug>",
+			detail: error.message,
+			remediation: error.remediation ?? "agx login",
 		});
-	} else if (apiStatus !== null) {
-		try {
-			const client = createApiClient({
-				baseUrl: profile.apiBaseUrl.replace(/\/$/, ""),
-				apiKey: profile.apiKey,
-				orgSlug: profile.orgSlug,
+	}
+	if (creds) {
+		const sourceLabel =
+			creds.source === "env"
+				? "AGX_API_KEY"
+				: creds.source === "legacy-config"
+					? "config.json (0.3 key)"
+					: `credentials.json (${creds.source})`;
+		checks.push({
+			name: "credential source",
+			verdict: creds.source === "legacy-config" ? "warn" : "pass",
+			detail: `${sourceLabel}${creds.entry?.organization ? `, org "${creds.entry.organization.slug}"` : ""}`,
+			remediation:
+				creds.source === "legacy-config"
+					? "This key predates agx login and has no expiry or scope. Replace it:\n    agx login"
+					: undefined,
+		});
+		const expiresAt = creds.entry?.expiresAt
+			? Date.parse(creds.entry.expiresAt)
+			: Number.NaN;
+		if (
+			Number.isFinite(expiresAt) &&
+			expiresAt - runtime().now() < EXPIRY_WARNING_MS
+		) {
+			checks.push({
+				name: "login expiry",
+				verdict: "warn",
+				detail: `the login expires on ${creds.entry?.expiresAt}`,
+				remediation: "agx login --force",
 			});
+		}
+	}
+	if (creds && apiStatus !== null) {
+		try {
+			const client = createApiClient(creds);
 			const result = await client.agentIndex.searchListings({
-				orgSlug: profile.orgSlug,
+				orgSlug: creds.orgSlug,
 				limit: 1,
 			});
 			checks.push({
 				name: "api credentials",
 				verdict: "pass",
-				detail: `key accepted for org "${profile.orgSlug}" (${result.total} listing(s) visible)`,
+				detail: `key accepted for org "${creds.orgSlug}" (${result.total} listing(s) visible)`,
 			});
 		} catch (error) {
 			const message =
@@ -366,28 +411,19 @@ export async function doctorCommand(options: DoctorOptions): Promise<void> {
 				remediation: /does not have access to this organization/i.test(
 					message,
 				)
-					? `An API key is bound to a single organization. Mint one scoped to "${profile.orgSlug}", then:\n    agx config set apiKey <key>`
-					: "Mint a fresh API key, then:\n    agx config set apiKey <key>",
+					? `A key is bound to a single organization. Log in to "${creds.orgSlug}":\n    agx login --org ${creds.orgSlug}`
+					: "agx login",
 			});
 		}
 	}
 
 	// 6. Listing health — the two states that make discovery silently return nothing.
 	const state = loadState(profileName);
-	if (
-		state.listingId &&
-		profile.apiKey &&
-		profile.orgSlug &&
-		apiStatus !== null
-	) {
+	if (state.listingId && creds && apiStatus !== null) {
 		try {
-			const client = createApiClient({
-				baseUrl: profile.apiBaseUrl.replace(/\/$/, ""),
-				apiKey: profile.apiKey,
-				orgSlug: profile.orgSlug,
-			});
+			const client = createApiClient(creds);
 			const { listing } = await client.agentIndex.getListing({
-				orgSlug: profile.orgSlug,
+				orgSlug: creds.orgSlug,
 				listingId: state.listingId,
 			});
 			if (npub && listing.npub !== npub) {

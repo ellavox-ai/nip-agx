@@ -45,8 +45,13 @@ import { relayCommand } from "./commands/relay.js";
 import { searchCommand } from "./commands/search.js";
 import { requestCommand, sendCommand } from "./commands/send.js";
 import { serveCommand } from "./commands/serve.js";
-import { AgxCliError, EXIT } from "./lib/errors.js";
-import { setColor, setJsonMode } from "./lib/output.js";
+import { AgxCliError, EXIT, HumanActionRequiredError } from "./lib/errors.js";
+import {
+	emitStdoutJson,
+	isJsonMode,
+	setColor,
+	setJsonMode,
+} from "./lib/output.js";
 import { AGX_CLI_VERSION } from "./lib/version.js";
 
 /**
@@ -103,12 +108,15 @@ export function buildProgram(): Command {
 	const config = program.command("config").description("manage profiles");
 	config
 		.command("show")
-		.description("show the active profile")
-		.option("--reveal", "print the API key in full")
+		.description("show the active profile (never prints an API key)")
+		.addOption(new Option("--reveal").hideHelp())
 		.action((options) => configShowCommand(withGlobals(options)));
 	config
-		.command("set <key> <value>")
-		.description("set apiBaseUrl | apiKey | orgSlug | relays | org | nip05")
+		.command("set <key> [value]")
+		.description(
+			"set apiBaseUrl | apiKey | orgSlug | relays | org | nip05 (apiKey: pipe it with --stdin)",
+		)
+		.option("--stdin", "read the value from stdin (one line)")
 		.action((key, value, options) =>
 			configSetCommand(key, value, withGlobals(options)),
 		);
@@ -501,9 +509,28 @@ export function buildProgram(): Command {
 
 // ------------------------------------------------------------------ main
 
-/** Print an error the way the CLI always has: message and remediation on
- * stderr. Returns the exit code. */
+/**
+ * Print an error the way the CLI always has (message and remediation on
+ * stderr), except for exit 7: under `--json` the `{"actionRequired":{…}}`
+ * object goes to STDOUT, as the one JSON document of the run (spec §1.8).
+ */
 export function reportCliError(error: unknown): number {
+	if (error instanceof HumanActionRequiredError) {
+		if (isJsonMode()) {
+			emitStdoutJson({ actionRequired: error.actionRequired });
+			return error.exitCode;
+		}
+		const action = error.actionRequired;
+		console.error(`\n${kleur.yellow("!")} ${error.message}`);
+		console.error(`\n  ${kleur.bold(action.url)}`);
+		if (action.userCode) {
+			console.error(`  code ${kleur.bold(action.userCode)}`);
+		}
+		if (error.remediation) {
+			console.error(kleur.dim(`\n  ${error.remediation}\n`));
+		}
+		return error.exitCode;
+	}
 	if (error instanceof AgxCliError) {
 		console.error(`\n${kleur.red("✗")} ${error.message}`);
 		if (error.remediation) {
