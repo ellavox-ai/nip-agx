@@ -1,4 +1,4 @@
-import { createApiClient, toCliError } from "../lib/api.js";
+import { createApiClient, isKeyRejected, toCliError } from "../lib/api.js";
 import {
 	getProfile,
 	loadConfig,
@@ -21,8 +21,9 @@ import { json, notice, ok, warn } from "../lib/output.js";
  *
  * A key is revoked against the origin it was issued for, never the current
  * `apiBaseUrl`, through the self-revoke `prm.apiKeys.delete` (spec §1.6). A key
- * that the server no longer knows (401/404) is simply forgotten. A network
- * failure keeps the key, so it can still be revoked later, unless `--local`.
+ * the server refuses as invalid or expired (401) is simply forgotten. Any
+ * other failure — the server unreachable, or a 404 because it has no
+ * self-revoke — keeps the key, so it can still be revoked, unless `--local`.
  */
 
 export interface LogoutOptions {
@@ -34,7 +35,7 @@ export interface LogoutOptions {
 export type LogoutReason =
 	/** Revoked on the server, then forgotten. */
 	| "revoked"
-	/** The server no longer knew the key (401/404); forgotten. */
+	/** The server refused the key as invalid or expired (401); forgotten. */
 	| "already-invalid"
 	/** `--local`: the server could not revoke it; forgotten anyway. */
 	| "not-revoked-local"
@@ -53,46 +54,43 @@ export interface LogoutRow {
 type RevokeResult = "revoked" | "already-invalid";
 
 /** Revoke one stored key against its own origin. Throws on anything other
- * than success / 401 / 404. */
+ * than success, or the server refusing the key itself ({@link isKeyRejected}). */
 async function revoke(entry: CredentialEntry): Promise<RevokeResult> {
 	const origin = originOf(entry.apiBaseUrl);
 	if (!origin) {
 		return "already-invalid";
 	}
 	const client = createApiClient({ baseUrl: origin, apiKey: entry.apiKey });
-	const classify = (error: unknown): RevokeResult => {
-		const err = error as { status?: number; code?: string };
-		if (
-			err?.status === 401 ||
-			err?.status === 404 ||
-			err?.code === "UNAUTHORIZED" ||
-			err?.code === "NOT_FOUND"
-		) {
+	const classify = (error: unknown, context: string): RevokeResult => {
+		if (isKeyRejected(error)) {
 			return "already-invalid";
 		}
-		throw toCliError(error, "prm.apiKeys.delete", origin);
+		throw toCliError(error, context, origin);
 	};
 
 	let apiKeyId = entry.apiKeyId;
 	if (!apiKeyId) {
 		// A manual key does not know its own id: ask the server first.
+		let principal: { apiKey?: { id?: string } | null };
 		try {
-			const principal = (await client.account.principal.get({})) as {
-				apiKey?: { id?: string } | null;
-			};
-			apiKeyId = principal.apiKey?.id ?? null;
+			principal = (await client.account.principal.get({})) as typeof principal;
 		} catch (error) {
-			return classify(error);
+			return classify(error, "account.principal.get");
 		}
+		apiKeyId = principal.apiKey?.id ?? null;
 		if (!apiKeyId) {
-			return "already-invalid";
+			// The key works (the call succeeded), so it is NOT invalid.
+			throw new AgxCliError(
+				"account.principal.get: the server did not say which key this is, so agx cannot revoke it.",
+				{ exitCode: EXIT.remote },
+			);
 		}
 	}
 	try {
 		await client.prm.apiKeys.delete({ apiKeyId });
 		return "revoked";
 	} catch (error) {
-		return classify(error);
+		return classify(error, "prm.apiKeys.delete");
 	}
 }
 
@@ -136,7 +134,9 @@ async function logoutProfile(
 					{
 						exitCode: cli.exitCode,
 						remediation:
-							"Retry when the server is reachable, or forget the key on this machine only:\n    agx logout --local",
+							cli.exitCode === EXIT.network
+								? "Retry when the server is reachable, or forget the key on this machine only:\n    agx logout --local"
+								: "This server could not revoke it. Revoke it in Settings → API keys, then forget it on this machine:\n    agx logout --local",
 					},
 				);
 				return { row, failure };
@@ -186,7 +186,7 @@ export async function logoutCommand(options: LogoutOptions): Promise<void> {
 				break;
 			case "already-invalid":
 				ok(
-					`Logged out of profile "${row.profile}"; the server no longer knew the key.`,
+					`Logged out of profile "${row.profile}"; the server already refused the key as invalid or expired.`,
 				);
 				break;
 			case "not-logged-in":

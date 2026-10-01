@@ -323,6 +323,31 @@ function fromDataCode(
 }
 
 /**
+ * Did the server refuse the KEY itself — unknown, revoked, deleted or expired?
+ * Only then may agx forget a key without revoking it.
+ *
+ * A 404 is never that: an API-key caller whose key the server does not know
+ * gets 401 `API_KEY_INVALID` (spec §1.6, §1.7), so a 404 means the procedure
+ * is missing (a server without it, a proxy, a wrong path) and the key may
+ * well still work. A disabled key still exists and can be re-enabled, and a
+ * 0.3 server's "missing organization scope" 401 names a key that exists too.
+ */
+export function isKeyRejected(error: unknown): boolean {
+	if (error instanceof AgxCliError) {
+		return false;
+	}
+	const err = error as OrpcErrorLike;
+	const dataCode = str(err?.data?.code);
+	if (dataCode) {
+		return dataCode === "API_KEY_INVALID" || dataCode === "API_KEY_EXPIRED";
+	}
+	if (err?.status !== 401 && err?.code !== "UNAUTHORIZED") {
+		return false;
+	}
+	return !/organization scope/i.test(err?.message ?? "");
+}
+
+/**
  * Turn a transport or oRPC failure into something with a next action.
  *
  * `data.code` (spec §1.7) is consulted FIRST, then the oRPC code/status, and

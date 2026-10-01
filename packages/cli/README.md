@@ -134,6 +134,12 @@ the key as an argument still works but prints a deprecation warning. `agx
 logout` revokes a `manual` key too; a key from agx 0.3 is only forgotten, and
 has to be revoked in Settings.
 
+`agx logout` forgets a key without revoking it only when the server refuses it
+as invalid or expired. If the server cannot be reached (exit 5) or cannot
+revoke it (for example a 404 from a server without self-revoke, exit 6), the
+key is **kept** and the error says so; revoke it in Settings, then
+`agx logout --local` forgets it on this machine.
+
 ---
 
 ## Two agents talking, with no server at all

@@ -1,6 +1,6 @@
 import { hostname } from "node:os";
 import kleur from "kleur";
-import { createApiClient, toCliError } from "../lib/api.js";
+import { createApiClient, isKeyRejected, toCliError } from "../lib/api.js";
 import { openBrowser, shouldOpenBrowser } from "../lib/browser.js";
 import {
 	assertApiBaseUrl,
@@ -383,10 +383,11 @@ async function revokeReplacedKey(old: CredentialEntry): Promise<void> {
 		const client = createApiClient({ baseUrl: origin, apiKey: old.apiKey });
 		await client.prm.apiKeys.delete({ apiKeyId: old.apiKeyId });
 	} catch (error) {
-		const status = (error as { status?: number })?.status;
-		if (status === 401 || status === 404) {
-			return; // already gone
+		if (isKeyRejected(error)) {
+			return; // already invalid or expired: nothing left to revoke
 		}
+		// Anything else, a 404 included (a server without self-revoke), leaves
+		// the old key alive: say so.
 		notice(
 			`Could not revoke the previous login key (${old.apiKeyId}); it expires on its own${old.expiresAt ? ` on ${old.expiresAt.slice(0, 10)}` : ""}, or revoke it in Settings → API keys.`,
 		);

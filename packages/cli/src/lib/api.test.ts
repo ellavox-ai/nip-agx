@@ -2,7 +2,7 @@ import { ORPCError } from "@orpc/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { sandbox } from "../test/helpers.js";
 import { CONTRACT, type MockIndexServer, startMockIndexServer } from "../test/mock-index-server.js";
-import { createApiClient, resolveActionUrl, toCliError, userAgent } from "./api.js";
+import { createApiClient, isKeyRejected, resolveActionUrl, toCliError, userAgent } from "./api.js";
 import { AgxCliError, EXIT, HumanActionRequiredError } from "./errors.js";
 
 const BASE = "https://app.ellaworks.ai";
@@ -150,6 +150,32 @@ describe("toCliError: every §1.7 data.code", () => {
 			BASE,
 		);
 		expect(error.exitCode).toBe(5);
+	});
+});
+
+describe("isKeyRejected (may a key be forgotten unrevoked?)", () => {
+	it.each([
+		["API_KEY_INVALID", true],
+		["API_KEY_EXPIRED", true],
+		["API_KEY_DISABLED", false],
+		["API_KEY_OWNER_NOT_MEMBER", false],
+		["API_KEY_SELF_REVOKE_ONLY", false],
+		["INSUFFICIENT_SCOPE", false],
+	])("%s → %s", (name, expected) => {
+		expect(isKeyRejected(fromFixture(name))).toBe(expected);
+	});
+
+	it("a 401 without a code is (a pre-Phase-1 server's Invalid API key)", () => {
+		expect(isKeyRejected(new ORPCError("UNAUTHORIZED", { message: "Invalid API key" }))).toBe(true);
+		expect(
+			isKeyRejected(new ORPCError("UNAUTHORIZED", { message: "API key is missing organization scope" })),
+		).toBe(false);
+	});
+
+	it("a 404 never is: it means the procedure is missing, not the key", () => {
+		expect(isKeyRejected(new ORPCError("NOT_FOUND", { message: "Not found" }))).toBe(false);
+		expect(isKeyRejected(Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } }))).toBe(false);
+		expect(isKeyRejected(new AgxCliError("redirect", { exitCode: EXIT.remote }))).toBe(false);
 	});
 });
 

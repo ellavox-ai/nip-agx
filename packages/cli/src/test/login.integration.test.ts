@@ -369,6 +369,64 @@ describe("agx login", () => {
 		expect(readJson(credentialsFile()).profiles.default).toBeUndefined();
 	});
 
+	it("(g) logout forgets a key the server says has expired (401 API_KEY_EXPIRED)", async () => {
+		expect((await loginViaNoWait()).code).toBe(0);
+		mock.setRpc("prm/apiKeys/delete", () => structuredClone(CONTRACT.rpcErrors.API_KEY_EXPIRED as never));
+		const run = await agx("logout", "--json");
+		expect(run.code).toBe(0);
+		expect(onlyJson(run).loggedOut[0]).toEqual({ profile: "default", revoked: false, reason: "already-invalid" });
+	});
+
+	it("(g) a 404 is not 'already invalid': a manual key on a server without whoami is kept (exit 6), --local forgets it unrevoked", async () => {
+		const manual = mock.addKey();
+		process.env.AGX_API_URL = mock.origin;
+		const { setStdinForTests } = await import("../lib/stdin.js");
+		const restore = setStdinForTests(manual.key);
+		try {
+			expect((await agx("config", "set", "apiKey", "--stdin")).code).toBe(0);
+		} finally {
+			restore();
+		}
+		mock.setRpc("account/principal/get", () => ({
+			status: 404,
+			body: { json: { defined: false, code: "NOT_FOUND", status: 404, message: "Not found" } },
+		}));
+		const kept = await agx("logout", "--json");
+		expect(kept.code).toBe(6);
+		expect(onlyJson(kept).loggedOut[0]).toEqual({ profile: "default", revoked: false, reason: "revoke-failed" });
+		expect(kept.stderr).toMatch(/kept/);
+		expect(kept.stderr).toMatch(/Settings/);
+		expect(readJson(credentialsFile()).profiles.default.apiKey).toBe(manual.key);
+		expect(manual.revoked).toBe(false);
+
+		const local = await agx("logout", "--json", "--local");
+		expect(local.code).toBe(0);
+		expect(onlyJson(local).loggedOut[0]).toEqual({ profile: "default", revoked: false, reason: "not-revoked-local" });
+		expect(local.stderr).toMatch(/without revoking it/);
+		expect(readJson(credentialsFile()).profiles.default).toBeUndefined();
+	});
+
+	it("(g) a 404 from the self-revoke itself keeps a login key (exit 6)", async () => {
+		expect((await loginViaNoWait()).code).toBe(0);
+		mock.setRpc("prm/apiKeys/delete", () => ({
+			status: 404,
+			body: { json: { defined: false, code: "NOT_FOUND", status: 404, message: "Not found" } },
+		}));
+		const run = await agx("logout", "--json");
+		expect(run.code).toBe(6);
+		expect(onlyJson(run).loggedOut[0]).toEqual({ profile: "default", revoked: false, reason: "revoke-failed" });
+		expect(readJson(credentialsFile()).profiles.default).toBeDefined();
+	});
+
+	it("(g) a disabled key still exists: it is kept, not forgotten as invalid", async () => {
+		expect((await loginViaNoWait()).code).toBe(0);
+		mock.setRpc("prm/apiKeys/delete", () => structuredClone(CONTRACT.rpcErrors.API_KEY_DISABLED as never));
+		const run = await agx("logout", "--json");
+		expect(run.code).toBe(4);
+		expect(onlyJson(run).loggedOut[0]).toMatchObject({ reason: "revoke-failed" });
+		expect(readJson(credentialsFile()).profiles.default).toBeDefined();
+	});
+
 	it("(g) logout keeps the key and exits 5 when the server is unreachable, unless --local", async () => {
 		expect((await loginViaNoWait()).code).toBe(0);
 		await mock.close();
@@ -531,6 +589,22 @@ describe("agx login, more", () => {
 		expect(mock.keys).toHaveLength(2);
 		expect(old?.revoked).toBe(true);
 		expect(readJson(credentialsFile()).profiles.default.apiKeyId).toBe(mock.keys[1]?.id);
+	});
+
+	it("--force says so when the old key could not be revoked (404), and stays quiet when it was already invalid", async () => {
+		expect((await loginViaNoWait()).code).toBe(0);
+		mock.setRpc("prm/apiKeys/delete", () => ({
+			status: 404,
+			body: { json: { defined: false, code: "NOT_FOUND", status: 404, message: "Not found" } },
+		}));
+		const notFound = await loginViaNoWait("--force");
+		expect(notFound.code, notFound.stderr).toBe(0);
+		expect(notFound.stderr).toMatch(/Could not revoke the previous login key/);
+
+		mock.setRpc("prm/apiKeys/delete", () => structuredClone(CONTRACT.rpcErrors.API_KEY_INVALID as never));
+		const invalid = await loginViaNoWait("--force");
+		expect(invalid.code, invalid.stderr).toBe(0);
+		expect(invalid.stderr).not.toMatch(/Could not revoke/);
 	});
 
 	it("human mode: the URL and code go to stderr, the result to stdout", async () => {
