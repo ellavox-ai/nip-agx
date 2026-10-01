@@ -1,5 +1,5 @@
 {
-	"$comment": "Server-CLI contract v1 for agx login (agx login build spec 2026-09-30, sections 1.2, 1.3, 1.5, 1.6 and 1.7). The SHAPES are the contract: keys, value types, and which keys are present or absent. Values are the spec's examples, placeholders included. The server copy lives at packages/api/modules/device-auth/__tests__/fixtures/contract-v1.json in elacity-mega; a change to either copy needs a change to the spec. The agx mock index server (src/test/mock-index-server.ts) serves these bodies.",
+	"$comment": "Server-CLI contract v1 for agx login (packages/cli/LOGIN-CONTRACT.md, sections 1.2, 1.3, 1.5, 1.6 and 1.7). The SHAPES are the contract: keys, value types, and which keys are present or absent. Values are that document's examples, placeholders included. A change here needs a matching change to LOGIN-CONTRACT.md, and the other way round. The agx mock index server (src/test/mock-index-server.ts) serves these bodies.",
 	"version": 1,
 	"scopes": ["listings:read", "listings:write", "domains:read", "domains:write"],
 	"userCodePattern": "^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{4}-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{4}$",

@@ -12,8 +12,9 @@ import type { AddressInfo } from "node:net";
  *
  * `node:http` on 127.0.0.1:0, serving the contract fixture
  * (`fixtures/contract-v1.json`) for the device endpoints and the RPC
- * procedures `agx login` and friends call. It implements the §1.3 rules for
- * real — pacing, single use, client binding — so the CLI is tested against
+ * procedures `agx login` and friends call. It implements the
+ * LOGIN-CONTRACT.md §1.3 rules for real — pacing, single use, client binding —
+ * so the CLI is tested against
  * the contract rather than against a script. Every request is logged.
  */
 
@@ -129,7 +130,8 @@ export interface MockIndexServer {
 export interface MockOptions {
 	/** The server's clock (ms). Share it with the CLI's runtime in tests. */
 	now?: () => number;
-	/** Behave like a server without Phase 1: no `scope` echo on /code. */
+	/** Behave like a server that predates the login contract: no `scope` echo
+	 * on /code. */
 	omitScopeEcho?: boolean;
 	/** Put the verification page on this origin instead of the server's own. */
 	verificationOrigin?: string;
@@ -319,7 +321,7 @@ export async function startMockIndexServer(
 		if (queued) {
 			return queued;
 		}
-		// §1.3, in order.
+		// LOGIN-CONTRACT.md §1.3, in order.
 		if (!deviceCode) {
 			return oauth(400, { error: "invalid_request" });
 		}

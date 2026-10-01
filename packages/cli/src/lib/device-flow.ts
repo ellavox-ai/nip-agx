@@ -22,14 +22,15 @@ import { isWellFormedApiKey } from "./secrets.js";
 
 /**
  * The CLI half of the device authorization grant (RFC 8628) as the index
- * implements it (spec §1.2, §1.3): plain `fetch`, JSON bodies, never a
- * redirect, and nothing from a response body ever echoed into an error — the
- * one body that matters holds the key.
+ * implements it (LOGIN-CONTRACT.md §1.2, §1.3): plain `fetch`, JSON bodies,
+ * never a redirect, and nothing from a response body ever echoed into an
+ * error — the one body that matters holds the key.
  */
 
 export const DEVICE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code";
 export const AGX_CLIENT_ID = "agx";
-/** Canonical order (spec §1.1). `:write` does not imply `:read`, so all four. */
+/** Canonical order (LOGIN-CONTRACT.md §1.1). `:write` does not imply `:read`,
+ * so all four. */
 export const AGX_SCOPES = [
 	"listings:read",
 	"listings:write",
@@ -87,9 +88,9 @@ export const pendingLoginSchema = z.object({
 });
 export type PendingLogin = z.infer<typeof pendingLoginSchema>;
 
-/** The §1.3 success body. `organization` and `api_key_id` are required: a key
- * without them could not be bound or revoked, so it is never stored. Nor is
- * an `access_token` that could not be sent as a header. */
+/** The LOGIN-CONTRACT.md §1.3 success body. `organization` and `api_key_id`
+ * are required: a key without them could not be bound or revoked, so it is
+ * never stored. Nor is an `access_token` that could not be sent as a header. */
 const tokenSuccessSchema = z.object({
 	access_token: z.string().refine(isWellFormedApiKey),
 	token_type: z.string(),
@@ -245,12 +246,12 @@ export function retryAfterSeconds(
 }
 
 /**
- * `POST {base}/api/auth/device/code` (spec §1.2).
+ * `POST {base}/api/auth/device/code` (LOGIN-CONTRACT.md §1.2).
  *
- * Aborts BEFORE a code is ever shown when the answer does not prove a Phase 1
- * server: no `scope` echo means the server would mint an unscoped key that
- * never expires; a verification URI on another origin means the code would be
- * typed into someone else's page.
+ * Aborts BEFORE a code is ever shown when the answer does not prove a server
+ * that implements the contract: no `scope` echo means the server would mint
+ * an unscoped key that never expires; a verification URI on another origin
+ * means the code would be typed into someone else's page.
  */
 export async function requestDeviceCode(
 	base: string,
@@ -420,7 +421,7 @@ function codeExpired(rerun: string): AgxCliError {
 
 /**
  * Poll `POST {base}/api/auth/device/token` until the code is approved, denied
- * or expired (spec §1.3).
+ * or expired (LOGIN-CONTRACT.md §1.3).
  *
  * - waits at least `interval` between polls, measured from the last poll by
  *   ANY process (`lastPolledAt` is persisted);

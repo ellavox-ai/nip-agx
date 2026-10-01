@@ -12,7 +12,7 @@ import {
 } from "./mock-index-server.js";
 
 /**
- * The A2 journey commands against the mock index: idempotent `register`,
+ * The journey commands against the mock index: idempotent `register`,
  * `listing publish --wait`, the nostr.json body from `domain add`,
  * `domain verify --wait`, and the `peers` scope message.
  */

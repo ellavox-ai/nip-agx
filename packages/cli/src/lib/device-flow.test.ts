@@ -124,7 +124,7 @@ describe("requestDeviceCode", () => {
 		hostLabel: "alices-mbp",
 	};
 
-	it("posts the §1.2 fields as JSON, without following redirects", async () => {
+	it("posts the LOGIN-CONTRACT.md §1.2 fields as JSON, without following redirects", async () => {
 		const h = harness([{ status: 200, body: CONTRACT.deviceCode.response }]);
 		const result = await requestDeviceCode(
 			BASE,
@@ -230,7 +230,7 @@ describe("pollDeviceToken", () => {
 			oauth("authorization_pending"),
 			oauth("slow_down", { interval: 10 }),
 			oauth("authorization_pending"),
-			oauth("slow_down"), // no interval field (the Phase 0 firewall): +5
+			oauth("slow_down"), // no interval field (the per-IP limit): +5
 			oauth("authorization_pending"),
 			success(),
 		]);

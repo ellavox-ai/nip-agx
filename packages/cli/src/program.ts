@@ -601,7 +601,8 @@ export function buildProgram(): Command {
 /**
  * Print an error the way the CLI always has (message and remediation on
  * stderr), except for exit 7: under `--json` the `{"actionRequired":{…}}`
- * object goes to STDOUT, as the one JSON document of the run (spec §1.8).
+ * object goes to STDOUT, as the one JSON document of the run
+ * (LOGIN-CONTRACT.md §1.8).
  */
 export function reportCliError(error: unknown): number {
 	if (error instanceof HumanActionRequiredError) {

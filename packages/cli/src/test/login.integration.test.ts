@@ -19,7 +19,8 @@ import { CONTRACT, type MockIndexServer, startMockIndexServer } from "./mock-ind
 /**
  * `agx login` and the commands around it, end to end through the real
  * commander wiring, against the in-process mock index (which implements the
- * §1.3 rules), with a fake clock so minutes of polling take milliseconds.
+ * LOGIN-CONTRACT.md §1.3 rules), with a fake clock so minutes of polling take
+ * milliseconds.
  */
 
 let box: ReturnType<typeof sandbox>;
@@ -106,7 +107,7 @@ describe("agx login", () => {
 			verificationUri: `${mock.origin}/auth/device`,
 		});
 
-		// Only the result on stdout, shaped like §1.8.
+		// Only the result on stdout, shaped like LOGIN-CONTRACT.md §1.8.
 		const result = onlyJson(run);
 		const key = mock.keys[0];
 		expect(result).toEqual({
@@ -857,7 +858,7 @@ describe("agx login, more", () => {
 		}
 	});
 
-	it("--no-wait: a re-run after the code expired locally exits 4, then the next run starts over (§1.8)", async () => {
+	it("--no-wait: a re-run after the code expired locally exits 4, then the next run starts over (LOGIN-CONTRACT.md §1.8)", async () => {
 		const first = await agx("login", "--json", "--no-wait", "--api-base-url", mock.origin);
 		expect(first.code).toBe(7);
 		const shown = onlyJson(first).actionRequired.userCode;
@@ -964,8 +965,8 @@ describe("agx login, more", () => {
 			profiles: { default: { apiBaseUrl: "http://localhost:4000" } },
 		});
 		expect(resolveLoginBaseUrl("default", undefined)).toBe("http://localhost:4000");
-		process.env.AGX_API_URL = "https://staging.ellaworks.ai";
-		expect(resolveLoginBaseUrl("default", undefined)).toBe("https://staging.ellaworks.ai");
+		process.env.AGX_API_URL = "https://staging.example.com";
+		expect(resolveLoginBaseUrl("default", undefined)).toBe("https://staging.example.com");
 		expect(resolveLoginBaseUrl("default", "http://127.0.0.1:9/")).toBe("http://127.0.0.1:9");
 	});
 

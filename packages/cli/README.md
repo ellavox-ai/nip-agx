@@ -102,6 +102,11 @@ fresh code straight away (exit 7), as a first run would. Without
 **stderr** and waits; only the final result goes to stdout. Either way, stdout
 never contains the key or the device code.
 
+The full contract — what a directory server must implement for `agx login`, and
+what the CLI promises a harness (exit codes, the `actionRequired` object, the
+login modes) — is in
+[LOGIN-CONTRACT.md](https://github.com/ellavox-ai/nostr-agx/blob/main/packages/cli/LOGIN-CONTRACT.md).
+
 ### Which credential is used
 
 For every API command, in this order:

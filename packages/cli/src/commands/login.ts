@@ -54,7 +54,8 @@ import { runtime } from "../lib/runtime.js";
 import { isWellFormedApiKey, rememberSecret } from "../lib/secrets.js";
 
 /**
- * `agx login`: the device authorization flow (spec §1.2–§1.4, §1.8).
+ * `agx login`: the device authorization flow (LOGIN-CONTRACT.md §1.2–§1.4,
+ * §1.8).
  *
  * The CLI asks the server for a code, a human approves it in the browser
  * (signing up, picking or creating the org, accepting the Terms), and the CLI's
@@ -78,7 +79,8 @@ export interface LoginOptions {
 	force?: boolean;
 }
 
-/** What `agx login --json` prints on success (spec §1.8). Never the key. */
+/** What `agx login --json` prints on success (LOGIN-CONTRACT.md §1.8). Never
+ * the key. */
 export interface LoginResult {
 	loggedIn: true;
 	alreadyLoggedIn: boolean;
@@ -161,8 +163,8 @@ function rerunCommand(wait: boolean): string {
 /**
  * How long after a pending code expired a `--no-wait` re-run still reports
  * THAT code as expired (exit 4) instead of starting over. The server keeps a
- * code's row this long after expiry (spec §1.3), so within it the run is
- * plausibly the harness following up on the code it showed a person; a
+ * code's row this long after expiry (LOGIN-CONTRACT.md §1.3), so within it the
+ * run is plausibly the harness following up on the code it showed a person; a
  * pending file older than that was abandoned in an earlier session, and the
  * run requests a fresh code (exit 7) as a first run would.
  */
@@ -544,8 +546,9 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
 		resumed = true;
 	} else if (pending && !wait && expiredForMs <= RECENTLY_EXPIRED_MS) {
 		// --no-wait re-runs report on THE code the harness already showed a
-		// person (spec §1.8): it ran out, so this run says so (exit 4) instead
-		// of swapping in a new code nobody has seen. The next run starts over.
+		// person (LOGIN-CONTRACT.md §1.8): it ran out, so this run says so
+		// (exit 4) instead of swapping in a new code nobody has seen. The next
+		// run starts over.
 		removePendingLogin(profileName);
 		const done = finishedElsewhere(profileName, base, pending);
 		if (done) {

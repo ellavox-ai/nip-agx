@@ -8,7 +8,7 @@ import { emitStderrJson, isJsonMode } from "./output.js";
  * `domain verify --wait`).
  *
  * Both poll at 15 s or slower: an agx login key's rate limit only resets after
- * a quiet gap of 10 s (spec D3), and `verifyDomain` makes an outbound NIP-05
+ * a quiet gap of 10 s, and `verifyDomain` makes an outbound NIP-05
  * fetch on every call.
  */
 

@@ -50,7 +50,7 @@ export type ActionRequiredReason =
 	| "HUMAN_CONFIRMATION_REQUIRED"
 	| "TERMS_ACCEPTANCE_REQUIRED";
 
-/** The `actionRequired` object printed with exit 7 (spec §1.8). */
+/** The `actionRequired` object printed with exit 7 (LOGIN-CONTRACT.md §1.8). */
 export interface ActionRequired {
 	reason: ActionRequiredReason;
 	/** Always absolute, and always on the API origin agx is talking to (or, for

@@ -16,7 +16,7 @@ import { AgxCliError, EXIT, HumanActionRequiredError } from "./errors.js";
 
 const BASE = "https://app.ellaworks.ai";
 
-/** The §1.7 wire body, decoded the way RPCLink decodes it. */
+/** The LOGIN-CONTRACT.md §1.7 wire body, decoded the way RPCLink decodes it. */
 function fromFixture(name: string): ORPCError<string, unknown> {
 	const wire = (CONTRACT.rpcErrors[name]?.body as { json: Record<string, any> }).json;
 	return new ORPCError(wire.code, {
@@ -40,7 +40,7 @@ describe("exit codes", () => {
 	});
 });
 
-describe("toCliError: every §1.7 data.code", () => {
+describe("toCliError: every LOGIN-CONTRACT.md §1.7 data.code", () => {
 	it.each([
 		["HUMAN_CONFIRMATION_REQUIRED", 7],
 		["TERMS_ACCEPTANCE_REQUIRED", 7],
@@ -88,7 +88,7 @@ describe("toCliError: every §1.7 data.code", () => {
 		});
 	});
 
-	it("TERMS_ACCEPTANCE_REQUIRED keeps the Terms URL on the same site (spec §1.8)", () => {
+	it("TERMS_ACCEPTANCE_REQUIRED keeps the Terms URL on the same site (LOGIN-CONTRACT.md §1.8)", () => {
 		const error = toCliError(fromFixture("TERMS_ACCEPTANCE_REQUIRED"), "x", BASE);
 		expect((error as HumanActionRequiredError).actionRequired).toEqual({
 			reason: "TERMS_ACCEPTANCE_REQUIRED",
@@ -213,7 +213,7 @@ describe("isKeyRejected (may a key be forgotten unrevoked?)", () => {
 		expect(isKeyRejected(fromFixture(name))).toBe(expected);
 	});
 
-	it("a 401 without a code is only with the 0.3 message, exactly (a pre-Phase-1 server's Invalid API key)", () => {
+	it("a 401 without a code is only with the 0.3 message, exactly (an older server's Invalid API key)", () => {
 		expect(isKeyRejected(new ORPCError("UNAUTHORIZED", { message: "Invalid API key" }))).toBe(true);
 		expect(isKeyRejected(new ORPCError("SOMETHING", { status: 401, message: "Invalid API key" }))).toBe(true);
 	});
@@ -370,7 +370,7 @@ describe("createApiClient", () => {
 		expect(Date.now() - started).toBeLessThan(5_000);
 	});
 
-	it("decodes a §1.7 wire error into data.code", async () => {
+	it("decodes a LOGIN-CONTRACT.md §1.7 wire error into data.code", async () => {
 		const key = mock.addKey();
 		const error = await createApiClient({ baseUrl: mock.origin, apiKey: key.key })
 			.agentIndex.publishListing({ orgSlug: "acme-robotics", listingId: "l_7" })

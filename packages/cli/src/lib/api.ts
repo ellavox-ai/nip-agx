@@ -193,7 +193,8 @@ export function resolveActionUrl(
 	return fallback;
 }
 
-/** The fields of `ORPCError.data` the CLI branches on (spec §1.7). */
+/** The fields of `ORPCError.data` the CLI branches on (LOGIN-CONTRACT.md
+ * §1.7). */
 interface ErrorData {
 	code?: unknown;
 	message?: unknown;
@@ -224,8 +225,9 @@ const HUMAN_ACTION_CODES: Record<string, ActionRequiredReason> = {
 };
 
 /**
- * Map a server error with a `data.code` (spec §1.7). Returns null for a code
- * this CLI does not know, so the status-based fallbacks below still apply.
+ * Map a server error with a `data.code` (LOGIN-CONTRACT.md §1.7). Returns null
+ * for a code this CLI does not know, so the status-based fallbacks below still
+ * apply.
  */
 function fromDataCode(
 	data: ErrorData,
@@ -484,7 +486,8 @@ function debugText(message: string): string {
 }
 
 /** What a server that predates `data.code` says, verbatim, for a key it does
- * not know (spec §1.7 keeps the message for `API_KEY_INVALID`). */
+ * not know (LOGIN-CONTRACT.md §1.7 keeps the message for
+ * `API_KEY_INVALID`). */
 const LEGACY_INVALID_KEY_MESSAGE = "Invalid API key";
 
 /**
@@ -492,9 +495,10 @@ const LEGACY_INVALID_KEY_MESSAGE = "Invalid API key";
  * Only then may agx forget a key without revoking it.
  *
  * A 404 is never that: an API-key caller whose key the server does not know
- * gets 401 `API_KEY_INVALID` (spec §1.6, §1.7), so a 404 means the procedure
- * is missing (a server without it, a proxy, a wrong path) and the key may
- * well still work. A disabled key still exists and can be re-enabled.
+ * gets 401 `API_KEY_INVALID` (LOGIN-CONTRACT.md §1.6, §1.7), so a 404 means
+ * the procedure is missing (a server without it, a proxy, a wrong path) and
+ * the key may well still work. A disabled key still exists and can be
+ * re-enabled.
  *
  * A 401 WITHOUT a `data.code` counts only when its message is exactly the
  * 0.3 server's "Invalid API key". Any other 401 — a 0.3 server's "missing
@@ -520,9 +524,9 @@ export function isKeyRejected(error: unknown): boolean {
 /**
  * Turn a transport or oRPC failure into something with a next action.
  *
- * `data.code` (spec §1.7) is consulted FIRST, then the oRPC code/status, and
- * the 0.3 message regexes only as a last resort for servers that predate
- * `data.code`.
+ * `data.code` (LOGIN-CONTRACT.md §1.7) is consulted FIRST, then the oRPC
+ * code/status, and the 0.3 message regexes only as a last resort for servers
+ * that predate `data.code`.
  */
 export function toCliError(
 	error: unknown,

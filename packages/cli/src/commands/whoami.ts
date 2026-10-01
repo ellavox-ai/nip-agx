@@ -11,15 +11,16 @@ import { heading, json, kv, maskEmail, say, warn } from "../lib/output.js";
 
 /**
  * `agx whoami`: who the stored credential acts as, according to the server
- * (`account.principal.get`, spec §1.5). Never prints the key.
+ * (`account.principal.get`, LOGIN-CONTRACT.md §1.5). Never prints the key.
  */
 
 export interface WhoamiOptions {
 	profile?: string;
 }
 
-/** The §1.5 output, as loosely as the CLI needs it. Timestamps may arrive as
- * ISO strings (spec) or, from an older serializer, as `Date`s. */
+/** The LOGIN-CONTRACT.md §1.5 output, as loosely as the CLI needs it.
+ * Timestamps may arrive as ISO strings (the contract) or, from an older
+ * serializer, as `Date`s. */
 interface Principal {
 	authMethod?: string;
 	user?: { id: string; emailMasked?: string | null } | null;

@@ -21,7 +21,8 @@ import { isWellFormedApiKey } from "../lib/secrets.js";
  * `agx logout`: revoke the profile's key on the server, then forget it.
  *
  * A key is revoked against the origin it was issued for, never the current
- * `apiBaseUrl`, through the self-revoke `prm.apiKeys.delete` (spec §1.6). A key
+ * `apiBaseUrl`, through the self-revoke `prm.apiKeys.delete`
+ * (LOGIN-CONTRACT.md §1.6). A key
  * the server refuses as invalid or expired (401 `API_KEY_INVALID` or
  * `API_KEY_EXPIRED`, or an older server's exact "Invalid API key", see
  * {@link isKeyRejected}) is simply forgotten. Any other failure — the server
